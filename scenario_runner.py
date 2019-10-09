@@ -36,6 +36,7 @@ from srunner.scenariomanager.carla_data_provider import *
 from srunner.scenariomanager.scenario_manager import ScenarioManager
 from srunner.scenarios.control_loss import *
 from srunner.scenarios.follow_leading_vehicle import *
+from srunner.scenarios.erdos_benchmarks import *
 from srunner.scenarios.maneuver_opposite_direction import *
 from srunner.scenarios.no_signal_junction_crossing import *
 from srunner.scenarios.object_crash_intersection import *
@@ -71,6 +72,7 @@ SCENARIOS = {
     "SignalizedJunctionLeftTurn": TURN_LEFT_SIGNALIZED_JUNCTION_SCENARIOS,
     "ChangeLane": CHANGE_LANE_SCENARIOS,
     "CutIn": CUT_IN_SCENARIOS,
+    "ERDOSBenchmarks": ERDOS_BENCHMARK_SCENARIOS,
 }
 
 
