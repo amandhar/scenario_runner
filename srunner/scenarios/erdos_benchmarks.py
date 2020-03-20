@@ -628,7 +628,7 @@ class ERDOSCarFromAlley(BasicScenario):
         self._vehicle_velocity = 13
         self._vehicle_trigger_distance = 60
 
-        self._driving_distance = 320
+        self._driving_distance = 250
 
         # Call the base class to set up the scenario.
         super(ERDOSCarFromAlley,
