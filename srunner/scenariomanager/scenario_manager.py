@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2018-2019 Intel Corporation
+# Copyright (c) 2018-2020 Intel Corporation
 #
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
@@ -11,18 +11,17 @@ These must not be modified and are for reference only!
 """
 
 from __future__ import print_function
-import signal
 import sys
 import time
-import threading
 
 import py_trees
 
 from srunner.challenge.autoagents.agent_wrapper import AgentWrapper
 from srunner.challenge.challenge_statistics_manager import ChallengeStatisticsManager
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from srunner.scenariomanager.carla_data_provider import CarlaDataProvider, CarlaActorPool
 from srunner.scenariomanager.result_writer import ResultOutputProvider
 from srunner.scenariomanager.timer import GameTime, TimeOut
+from srunner.scenariomanager.watchdog import Watchdog
 
 
 class Scenario(object):
@@ -127,7 +126,7 @@ class ScenarioManager(object):
     5. Cleanup with manager.stop_scenario()
     """
 
-    def __init__(self, debug_mode=False, challenge_mode=False):
+    def __init__(self, debug_mode=False, challenge_mode=False, timeout=2.0):
         """
         Init requires scenario as input
         """
@@ -142,25 +141,13 @@ class ScenarioManager(object):
         self._agent = None
         self._running = False
         self._timestamp_last_run = 0.0
-        self._my_lock = threading.Lock()
+        self._timeout = timeout
+        self._watchdog = Watchdog(float(self._timeout))
 
         self.scenario_duration_system = 0.0
         self.scenario_duration_game = 0.0
         self.start_system_time = None
         self.end_system_time = None
-
-        # Register the scenario tick as callback for the CARLA world
-        # Use the callback_id inside the signal handler to allow external interrupts
-        self._callback_id = None
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-    def _signal_handler(self, signum, frame):
-        """
-        Terminate scenario ticking when receiving a signal interrupt
-        """
-        CarlaDataProvider.get_world().remove_on_tick(self._callback_id)
-        with self._my_lock:
-            self._running = False
 
     def _reset(self):
         """
@@ -172,17 +159,28 @@ class ScenarioManager(object):
         self.scenario_duration_game = 0.0
         self.start_system_time = None
         self.end_system_time = None
-        if self._callback_id:
-            CarlaDataProvider.get_world().remove_on_tick(self._callback_id)
-            self._callback_id = None
         GameTime.restart()
+
+    def cleanup(self):
+        """
+        This function triggers a proper termination of a scenario
+        """
+
+        if self.scenario is not None:
+            self.scenario.terminate()
+
+        if self._agent is not None:
+            self._agent.cleanup()
+            self._agent = None
+
+        CarlaDataProvider.cleanup()
+        CarlaActorPool.cleanup()
 
     def load_scenario(self, scenario, agent=None):
         """
         Load a new scenario
         """
         self._reset()
-        self._callback_id = CarlaDataProvider.get_world().on_tick(self._tick_scenario)
         self._agent = AgentWrapper(agent, self._challenge_mode) if agent else None
         self.scenario_class = scenario
         self.scenario = scenario.scenario
@@ -209,10 +207,22 @@ class ScenarioManager(object):
         self.start_system_time = time.time()
         start_game_time = GameTime.get_time()
 
+        self._watchdog.start()
         self._running = True
 
         while self._running:
-            time.sleep(0.5)
+            timestamp = None
+            world = CarlaDataProvider.get_world()
+            if world:
+                snapshot = world.get_snapshot()
+                if snapshot:
+                    timestamp = snapshot.timestamp
+            if timestamp:
+                self._tick_scenario(timestamp)
+
+        self._watchdog.stop()
+
+        self.cleanup()
 
         self.end_system_time = time.time()
         end_game_time = GameTime.get_time()
@@ -236,58 +246,53 @@ class ScenarioManager(object):
           multiple times in parallel.
         """
 
-        with self._my_lock:
-            if self._running and self._timestamp_last_run < timestamp.elapsed_seconds:
-                self._timestamp_last_run = timestamp.elapsed_seconds
+        if self._timestamp_last_run < timestamp.elapsed_seconds and self._running:
+            self._timestamp_last_run = timestamp.elapsed_seconds
 
-                if self._debug_mode:
-                    print("\n--------- Tick ---------\n")
+            self._watchdog.update()
 
-                # Update game time and actor information
-                GameTime.on_carla_tick(timestamp)
-                CarlaDataProvider.on_carla_tick()
+            if self._debug_mode:
+                print("\n--------- Tick ---------\n")
 
-                if self._agent is not None:
-                    ego_action = self._agent()
+            # Update game time and actor information
+            GameTime.on_carla_tick(timestamp)
+            CarlaDataProvider.on_carla_tick()
 
-                # Tick scenario
-                self.scenario_tree.tick_once()
+            if self._agent is not None:
+                ego_action = self._agent()
 
-                if self._debug_mode:
-                    print("\n")
-                    py_trees.display.print_ascii_tree(
-                        self.scenario_tree, show_status=True)
-                    sys.stdout.flush()
+            # Tick scenario
+            self.scenario_tree.tick_once()
 
-                if self.scenario_tree.status != py_trees.common.Status.RUNNING:
-                    self._running = False
+            if self._debug_mode:
+                print("\n")
+                py_trees.display.print_ascii_tree(self.scenario_tree, show_status=True)
+                sys.stdout.flush()
 
-                if self._challenge_mode:
-                    ChallengeStatisticsManager.compute_current_statistics()
+            if self.scenario_tree.status != py_trees.common.Status.RUNNING:
+                self._running = False
 
-                if self._agent is not None:
-                    self.ego_vehicles[0].apply_control(ego_action)
+            if self._challenge_mode:
+                ChallengeStatisticsManager.compute_current_statistics()
 
-        if self._agent:
-            CarlaDataProvider.get_world().tick()
+            if self._agent is not None:
+                self.ego_vehicles[0].apply_control(ego_action)
+
+        if self._agent and self._running and self._watchdog.get_status():
+            CarlaDataProvider.perform_carla_tick(self._timeout)
+
+    def get_running_status(self):
+        """
+        returns:
+           bool:  False if watchdog exception occured, True otherwise
+        """
+        return self._watchdog.get_status()
 
     def stop_scenario(self):
         """
-        This function triggers a proper termination of a scenario
+        This function is used by the overall signal handler to terminate the scenario execution
         """
-        with self._my_lock:
-            if self._callback_id:
-                CarlaDataProvider.get_world().remove_on_tick(self._callback_id)
-                self._callback_id = None
-
-        if self.scenario is not None:
-            self.scenario.terminate()
-
-        if self._agent is not None:
-            self._agent.cleanup()
-            self._agent = None
-
-        CarlaDataProvider.cleanup()
+        self._running = False
 
     def analyze_scenario(self, stdout, filename, junit):
         """

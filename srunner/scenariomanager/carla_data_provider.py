@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2018-2019 Intel Corporation
+# Copyright (c) 2018-2020 Intel Corporation
 #
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
@@ -15,6 +15,7 @@ from __future__ import print_function
 import math
 import random
 import re
+from threading import Thread
 from six import iteritems
 
 import carla
@@ -29,7 +30,7 @@ def calculate_velocity(actor):
     return math.sqrt(velocity_squared)
 
 
-class CarlaDataProvider(object):
+class CarlaDataProvider(object):  # pylint: disable=too-many-public-methods
 
     """
     This class provides access to various data of all registered actors
@@ -64,7 +65,7 @@ class CarlaDataProvider(object):
         """
         if actor in CarlaDataProvider._actor_velocity_map:
             raise KeyError(
-                "Vehicle '{}' already registered. Cannot register twice!".format(actor))
+                "Vehicle '{}' already registered. Cannot register twice!".format(actor.id))
         else:
             CarlaDataProvider._actor_velocity_map[actor] = 0.0
 
@@ -89,6 +90,22 @@ class CarlaDataProvider(object):
             CarlaDataProvider.register_actor(actor)
 
     @staticmethod
+    def perform_carla_tick(timeout=5.0):
+        """
+        Send tick() command to CARLA and wait for at
+        most timeout seconds to let tick() return
+
+        Note: This is a workaround as CARLA tick() has no
+              timeout functionality
+        """
+        t = Thread(target=CarlaDataProvider._world.tick)
+        t.daemon = True
+        t.start()
+        t.join(float(timeout))
+        if t.is_alive():
+            raise RuntimeError("Timeout of CARLA tick command")
+
+    @staticmethod
     def on_carla_tick():
         """
         Callback from CARLA
@@ -110,36 +127,42 @@ class CarlaDataProvider(object):
         """
         returns the absolute velocity for the given actor
         """
-        if actor not in CarlaDataProvider._actor_velocity_map.keys():
-            # We are intentionally not throwing here
-            # This may cause exception loops in py_trees
-            return 0.0
+        for key in CarlaDataProvider._actor_velocity_map:
+            if key.id == actor.id:
+                return CarlaDataProvider._actor_velocity_map[key]
 
-        return CarlaDataProvider._actor_velocity_map[actor]
+        # We are intentionally not throwing here
+        # This may cause exception loops in py_trees
+        print('{}.get_velocity: {} not found!' .format(__name__, actor))
+        return 0.0
 
     @staticmethod
     def get_location(actor):
         """
         returns the location for the given actor
         """
-        if actor not in CarlaDataProvider._actor_location_map.keys():
-            # We are intentionally not throwing here
-            # This may cause exception loops in py_trees
-            return None
+        for key in CarlaDataProvider._actor_location_map:
+            if key.id == actor.id:
+                return CarlaDataProvider._actor_location_map[key]
 
-        return CarlaDataProvider._actor_location_map[actor]
+        # We are intentionally not throwing here
+        # This may cause exception loops in py_trees
+        print('{}.get_location: {} not found!' .format(__name__, actor))
+        return None
 
     @staticmethod
     def get_transform(actor):
         """
         returns the transform for the given actor
         """
-        if actor not in CarlaDataProvider._actor_transform_map.keys():
-            # We are intentionally not throwing here
-            # This may cause exception loops in py_trees
-            return None
+        for key in CarlaDataProvider._actor_transform_map:
+            if key.id == actor.id:
+                return CarlaDataProvider._actor_transform_map[key]
 
-        return CarlaDataProvider._actor_transform_map[actor]
+        # We are intentionally not throwing here
+        # This may cause exception loops in py_trees
+        print('{}.get_transform: {} not found!' .format(__name__, actor))
+        return None
 
     @staticmethod
     def prepare_map():
@@ -206,24 +229,58 @@ class CarlaDataProvider(object):
         """
         dict_annotations = {'ref': [], 'opposite': [], 'left': [], 'right': []}
 
-        ref_yaw = traffic_light.get_transform().rotation.yaw
-        group_tl = traffic_light.get_group_traffic_lights()
-        for target_tl in group_tl:
-            target_yaw = target_tl.get_transform().rotation.yaw
-            diff = target_yaw - ref_yaw
-            if diff < 0.0:
-                diff = 360.0 + diff
+        # Get the waypoints
+        ref_location = CarlaDataProvider.get_trafficlight_trigger_location(traffic_light)
+        ref_waypoint = CarlaDataProvider.get_map().get_waypoint(ref_location)
+        ref_yaw = ref_waypoint.transform.rotation.yaw
 
-            if diff <= 45.0 or diff > 340.0:
+        group_tl = traffic_light.get_group_traffic_lights()
+
+        for target_tl in group_tl:
+            if traffic_light.id == target_tl.id:
                 dict_annotations['ref'].append(target_tl)
-            elif diff > 240 and diff < 300:
-                dict_annotations['left'].append(target_tl)
-            elif diff > 160.0 and diff <= 240.0:
-                dict_annotations['opposite'].append(target_tl)
             else:
-                dict_annotations['right'].append(target_tl)
+                # Get the angle between yaws
+                target_location = CarlaDataProvider.get_trafficlight_trigger_location(target_tl)
+                target_waypoint = CarlaDataProvider.get_map().get_waypoint(target_location)
+                target_yaw = target_waypoint.transform.rotation.yaw
+
+                diff = (target_yaw - ref_yaw) % 360
+
+                if diff > 330:
+                    continue
+                elif diff > 225:
+                    dict_annotations['right'].append(target_tl)
+                elif diff > 135.0:
+                    dict_annotations['opposite'].append(target_tl)
+                elif diff > 30:
+                    dict_annotations['left'].append(target_tl)
 
         return dict_annotations
+
+    @staticmethod
+    def get_trafficlight_trigger_location(traffic_light):    # pylint: disable=invalid-name
+        """
+        Calculates the yaw of the waypoint that represents the trigger volume of the traffic light
+        """
+        def rotate_point(point, angle):
+            """
+            rotate a given point by a given angle
+            """
+            x_ = math.cos(math.radians(angle)) * point.x - math.sin(math.radians(angle)) * point.y
+            y_ = math.sin(math.radians(angle)) * point.x - math.cos(math.radians(angle)) * point.y
+
+            return carla.Vector3D(x_, y_, point.z)
+
+        base_transform = traffic_light.get_transform()
+        base_rot = base_transform.rotation.yaw
+        area_loc = base_transform.transform(traffic_light.trigger_volume.location)
+        area_ext = traffic_light.trigger_volume.extent
+
+        point = rotate_point(carla.Vector3D(0, 0, area_ext.z), base_rot)
+        point_location = area_loc + carla.Location(x=point.x, y=point.y)
+
+        return carla.Location(point_location.x, point_location.y, point_location.z)
 
     @staticmethod
     def update_light_states(ego_light, annotations, states, freeze=False, timeout=1000000000):
@@ -232,24 +289,13 @@ class CarlaDataProvider(object):
         """
         reset_params = []
 
-        if 'ego' in states:
-            prev_state = ego_light.get_state()
-            prev_green_time = ego_light.get_green_time()
-            prev_red_time = ego_light.get_red_time()
-            prev_yellow_time = ego_light.get_yellow_time()
-            reset_params.append({'light': ego_light,
-                                 'state': prev_state,
-                                 'green_time': prev_green_time,
-                                 'red_time': prev_red_time,
-                                 'yellow_time': prev_yellow_time})
-
-            ego_light.set_state(states['ego'])
-            if freeze:
-                ego_light.set_green_time(timeout)
-                ego_light.set_red_time(timeout)
-                ego_light.set_yellow_time(timeout)
-        if 'ref' in states:
-            for light in annotations['ref']:
+        for state in states:
+            relevant_lights = []
+            if state == 'ego':
+                relevant_lights = [ego_light]
+            else:
+                relevant_lights = annotations[state]
+            for light in relevant_lights:
                 prev_state = light.get_state()
                 prev_green_time = light.get_green_time()
                 prev_red_time = light.get_red_time()
@@ -260,58 +306,7 @@ class CarlaDataProvider(object):
                                      'red_time': prev_red_time,
                                      'yellow_time': prev_yellow_time})
 
-                light.set_state(states['ref'])
-                if freeze:
-                    light.set_green_time(timeout)
-                    light.set_red_time(timeout)
-                    light.set_yellow_time(timeout)
-        if 'left' in states:
-            for light in annotations['left']:
-                prev_state = light.get_state()
-                prev_green_time = light.get_green_time()
-                prev_red_time = light.get_red_time()
-                prev_yellow_time = light.get_yellow_time()
-                reset_params.append({'light': light,
-                                     'state': prev_state,
-                                     'green_time': prev_green_time,
-                                     'red_time': prev_red_time,
-                                     'yellow_time': prev_yellow_time})
-
-                light.set_state(states['left'])
-                if freeze:
-                    light.set_green_time(timeout)
-                    light.set_red_time(timeout)
-                    light.set_yellow_time(timeout)
-        if 'right' in states:
-            for light in annotations['right']:
-                prev_state = light.get_state()
-                prev_green_time = light.get_green_time()
-                prev_red_time = light.get_red_time()
-                prev_yellow_time = light.get_yellow_time()
-                reset_params.append({'light': light,
-                                     'state': prev_state,
-                                     'green_time': prev_green_time,
-                                     'red_time': prev_red_time,
-                                     'yellow_time': prev_yellow_time})
-
-                light.set_state(states['right'])
-                if freeze:
-                    light.set_green_time(timeout)
-                    light.set_red_time(timeout)
-                    light.set_yellow_time(timeout)
-        if 'opposite' in states:
-            for light in annotations['opposite']:
-                prev_state = light.get_state()
-                prev_green_time = light.get_green_time()
-                prev_red_time = light.get_red_time()
-                prev_yellow_time = light.get_yellow_time()
-                reset_params.append({'light': light,
-                                     'state': prev_state,
-                                     'green_time': prev_green_time,
-                                     'red_time': prev_red_time,
-                                     'yellow_time': prev_yellow_time})
-
-                light.set_state(states['opposite'])
+                light.set_state(states[state])
                 if freeze:
                     light.set_green_time(timeout)
                     light.set_red_time(timeout)
@@ -337,12 +332,13 @@ class CarlaDataProvider(object):
         """
 
         CarlaDataProvider.prepare_map()
-        location = CarlaDataProvider.get_location(actor)
 
         if not use_cached_location:
             location = actor.get_transform().location
+        else:
+            location = CarlaDataProvider.get_location(actor)
 
-        waypoint = CarlaDataProvider._map.get_waypoint(location)
+        waypoint = CarlaDataProvider.get_map().get_waypoint(location)
         # Create list of all waypoints until next intersection
         list_of_waypoints = []
         while waypoint and not waypoint.is_intersection:
@@ -426,6 +422,7 @@ class CarlaActorPool(object):
     _carla_actor_pool = dict()
     _spawn_points = None
     _spawn_index = 0
+    _blueprint_library = None
 
     @staticmethod
     def set_client(client):
@@ -440,6 +437,7 @@ class CarlaActorPool(object):
         Set the CARLA world
         """
         CarlaActorPool._world = world
+        CarlaActorPool._blueprint_library = world.get_blueprint_library()
         CarlaActorPool.generate_spawn_points()
 
     @staticmethod
@@ -462,16 +460,53 @@ class CarlaActorPool(object):
         CarlaActorPool._spawn_index = 0
 
     @staticmethod
-    def setup_actor(model, spawn_point, rolename='scenario', hero=False, autopilot=False, random_location=False):
+    def create_blueprint(model, rolename='scenario', hero=False, autopilot=False, color=None, actor_category="car"):
         """
         Function to setup the most relevant actor parameters,
         incl. spawn point and vehicle model.
         """
 
-        blueprint_library = CarlaActorPool._world.get_blueprint_library()
+        _actor_blueprint_categories = {
+            'car': 'vehicle.tesla.model3',
+            'van': 'vehicle.volkswagen.t2',
+            'truck': 'vehicle.carlamotors.carlacola',
+            'trailer': '',
+            'semitrailer': '',
+            'bus': 'vehicle.volkswagen.t2',
+            'motorbike': 'vehicle.kawasaki.ninja',
+            'bicycle': 'vehicle.diamondback.century',
+            'train': '',
+            'tram': '',
+            'pedestrian': 'walker.pedestrian.0001',
+        }
 
         # Get vehicle by model
-        blueprint = random.choice(blueprint_library.filter(model))
+        try:
+            blueprint = random.choice(CarlaActorPool._blueprint_library.filter(model))
+        except IndexError:
+            # The model is not part of the blueprint library. Let's take a default one for the given category
+            bp_filter = "vehicle.*"
+            new_model = _actor_blueprint_categories[actor_category]
+            if new_model != '':
+                bp_filter = new_model
+            print("WARNING: Actor model {} not available. Using instead {}".format(model, new_model))
+            blueprint = random.choice(CarlaActorPool._blueprint_library.filter(bp_filter))
+
+        if color:
+            if not blueprint.has_attribute('color'):
+                print(
+                    "WARNING: Cannot set Color ({}) for actor {} due to missing blueprint attribute".format(
+                        color, blueprint.id))
+            else:
+                default_color_rgba = blueprint.get_attribute('color').as_color()
+                default_color = '({}, {}, {})'.format(default_color_rgba.r, default_color_rgba.g, default_color_rgba.b)
+                try:
+                    blueprint.set_attribute('color', color)
+                except ValueError:
+                    # Color can't be set for this vehicle
+                    print("WARNING: Color ({}) cannot be set for actor {}. Using instead: ({})".format(
+                        color, blueprint.id, default_color))
+                    blueprint.set_attribute('color', default_color)
 
         # is it a pedestrian? -> make it mortal
         if blueprint.has_attribute('is_invincible'):
@@ -481,6 +516,53 @@ class CarlaActorPool(object):
             blueprint.set_attribute('role_name', 'autopilot')
         else:
             blueprint.set_attribute('role_name', rolename)
+
+        return blueprint
+
+    @staticmethod
+    def handle_actor_batch(batch):
+        """
+        Forward a CARLA command batch to spawn actors to CARLA, and gather the responses
+
+        returns list of actors on success, none otherwise
+        """
+
+        actors = []
+
+        sync_mode = CarlaActorPool._world.get_settings().synchronous_mode
+
+        if CarlaActorPool._client and batch is not None:
+            responses = CarlaActorPool._client.apply_batch_sync(batch, sync_mode)
+        else:
+            return None
+
+        # wait for the actors to be spawned properly before we do anything
+        if sync_mode:
+            CarlaDataProvider.perform_carla_tick()
+        else:
+            CarlaActorPool._world.wait_for_tick()
+
+        actor_ids = []
+        if responses:
+            for response in responses:
+                if not response.error:
+                    actor_ids.append(response.actor_id)
+
+        carla_actors = CarlaActorPool._world.get_actors(actor_ids)
+        for actor in carla_actors:
+            actors.append(actor)
+
+        return actors
+
+    @staticmethod
+    def setup_actor(model, spawn_point, rolename='scenario', hero=False, autopilot=False,
+                    random_location=False, color=None, actor_category="car"):
+        """
+        Function to setup the most relevant actor parameters,
+        incl. spawn point and vehicle model.
+        """
+
+        blueprint = CarlaActorPool.create_blueprint(model, rolename, hero, autopilot, color, actor_category)
 
         if random_location:
             actor = None
@@ -499,19 +581,59 @@ class CarlaActorPool(object):
 
         if actor is None:
             raise RuntimeError(
-                "Error: Unable to spawn vehicle {} at {}".format(model, spawn_point))
+                "Error: Unable to spawn vehicle {} at {}".format(blueprint.id, spawn_point))
         else:
             # Let's deactivate the autopilot of the actor if it belongs to vehicle
-            if actor in blueprint_library.filter('vehicle.*'):
+            if actor in CarlaActorPool._blueprint_library.filter('vehicle.*'):
                 actor.set_autopilot(autopilot)
             else:
                 pass
         # wait for the actor to be spawned properly before we do anything
         if CarlaActorPool._world.get_settings().synchronous_mode:
-            CarlaActorPool._world.tick()
+            CarlaDataProvider.perform_carla_tick()
         else:
             CarlaActorPool._world.wait_for_tick()
+
         return actor
+
+    @staticmethod
+    def setup_actors(actor_list):
+        """
+        Function to setup a complete list of actors
+        """
+
+        SpawnActor = carla.command.SpawnActor               # pylint: disable=invalid-name
+        PhysicsCommand = carla.command.SetSimulatePhysics   # pylint: disable=invalid-name
+        FutureActor = carla.command.FutureActor             # pylint: disable=invalid-name
+        ApplyTransform = carla.command.ApplyTransform       # pylint: disable=invalid-name
+        batch = []
+        actors = []
+        for actor in actor_list:
+            blueprint = CarlaActorPool.create_blueprint(model=actor.model,
+                                                        rolename=actor.rolename,
+                                                        hero=False,
+                                                        autopilot=actor.autopilot,
+                                                        color=actor.color,
+                                                        actor_category=actor.category)
+            # slightly lift the actor to avoid collisions with ground when spawning the actor
+            # DO NOT USE spawn_point directly, as this will modify spawn_point permanently
+            _spawn_point = carla.Transform(carla.Location(), actor.transform.rotation)
+            _spawn_point.location.x = actor.transform.location.x
+            _spawn_point.location.y = actor.transform.location.y
+            _spawn_point.location.z = actor.transform.location.z + 0.2
+
+            if 'physics' in actor.args and actor.args['physics'] == "off":
+                command = SpawnActor(blueprint, _spawn_point).then(
+                    ApplyTransform(FutureActor, actor.transform)).then(PhysicsCommand(FutureActor, False))
+            elif actor.category == 'misc':
+                command = SpawnActor(blueprint, _spawn_point).then(PhysicsCommand(FutureActor, True))
+            else:
+                command = SpawnActor(blueprint, _spawn_point)
+            batch.append(command)
+
+        actors = CarlaActorPool.handle_actor_batch(batch)
+
+        return actors
 
     @staticmethod
     def setup_batch_actors(model, amount, spawn_point, hero=False, autopilot=False, random_location=False):
@@ -561,25 +683,7 @@ class CarlaActorPool(object):
             if spawn_point:
                 batch.append(SpawnActor(blueprint, spawn_point).then(SetAutopilot(FutureActor, autopilot)))
 
-        if CarlaActorPool._client:
-            responses = CarlaActorPool._client.apply_batch_sync(batch)
-
-        # wait for the actors to be spawned properly before we do anything
-        if CarlaActorPool._world.get_settings().synchronous_mode:
-            CarlaActorPool._world.tick()
-        else:
-            CarlaActorPool._world.wait_for_tick()
-
-        actor_list = []
-        actor_ids = []
-        if responses:
-            for response in responses:
-                if not response.error:
-                    actor_ids.append(response.actor_id)
-
-        carla_actors = CarlaActorPool._world.get_actors(actor_ids)
-        for actor in carla_actors:
-            actor_list.append(actor)
+        actor_list = CarlaActorPool.handle_actor_batch(batch)
 
         return actor_list
 
@@ -599,18 +703,35 @@ class CarlaActorPool(object):
         return actors
 
     @staticmethod
-    def request_new_actor(model, spawn_point, rolename='scenario', hero=False, autopilot=False, random_location=False):
+    def request_new_actor(model, spawn_point, rolename='scenario', hero=False, autopilot=False,
+                          random_location=False, color=None, actor_category=None):
         """
         This method tries to create a new actor. If this was
         successful, the new actor is returned, None otherwise.
         """
-        actor = CarlaActorPool.setup_actor(model, spawn_point, rolename, hero, autopilot, random_location)
+        actor = CarlaActorPool.setup_actor(
+            model, spawn_point, rolename, hero, autopilot, random_location, color, actor_category)
 
         if actor is None:
             return None
 
         CarlaActorPool._carla_actor_pool[actor.id] = actor
         return actor
+
+    @staticmethod
+    def request_new_actors(actor_list):
+        """
+        This method tries to create a list of new actors. If this was
+        successful, the new actors are returned, None otherwise.
+        """
+        actors = CarlaActorPool.setup_actors(actor_list)
+
+        if actors is None:
+            return None
+
+        for actor in actors:
+            CarlaActorPool._carla_actor_pool[actor.id] = actor
+        return actors
 
     @staticmethod
     def actor_id_exists(actor_id):
@@ -661,9 +782,21 @@ class CarlaActorPool(object):
         """
         Cleanup the actor pool, i.e. remove and destroy all actors
         """
+
+        DestroyActor = carla.command.DestroyActor       # pylint: disable=invalid-name
+        batch = []
+
         for actor_id in CarlaActorPool._carla_actor_pool.copy():
-            CarlaActorPool._carla_actor_pool[actor_id].destroy()
-            CarlaActorPool._carla_actor_pool.pop(actor_id)
+            batch.append(DestroyActor(CarlaActorPool._carla_actor_pool[actor_id]))
+
+        if CarlaActorPool._client:
+            try:
+                CarlaActorPool._client.apply_batch_sync(batch)
+            except RuntimeError as e:
+                if "time-out" in str(e):
+                    pass
+                else:
+                    raise e
 
         CarlaActorPool._carla_actor_pool = dict()
         CarlaActorPool._world = None

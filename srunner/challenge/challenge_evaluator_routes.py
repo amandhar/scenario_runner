@@ -1035,14 +1035,14 @@ class ChallengeEvaluator(object):
             settings = self.world.get_settings()
             settings.synchronous_mode = False
             settings.no_rendering_mode = False
-            settings.fixed_delta_seconds = 1.0 / self.frame_rate
+            settings.fixed_delta_seconds = None
             self.world.apply_settings(settings)
         else:
             world = client.get_world()
             settings = world.get_settings()
             settings.synchronous_mode = False
             settings.no_rendering_mode = False
-            settings.fixed_delta_seconds = 1.0 / self.frame_rate
+            settings.fixed_delta_seconds = None
             world.apply_settings(settings)
             world = None
 
@@ -1137,7 +1137,8 @@ class ChallengeEvaluator(object):
         sampled_scenarios_definitions = self.scenario_sampling(potential_scenarios_definitions)
 
         # create agent
-        self.agent_instance = getattr(self.module_agent, self.module_agent.__name__)(args.config)
+        agent_class_name = self.module_agent.__name__.title().replace('_', '')
+        self.agent_instance = getattr(self.module_agent, agent_class_name)(args.config)
         correct_sensors, error_message = self.valid_sensors_configuration(self.agent_instance, self.track)
 
         if not correct_sensors:

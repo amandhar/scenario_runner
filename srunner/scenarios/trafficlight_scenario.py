@@ -24,8 +24,6 @@ class TrafficLightScenario(BasicScenario):
     This is a single ego vehicle scenario
     """
 
-    category = "TrafficLightScenario"
-
     def __init__(self, world, ego_vehicles, config, randomize=False, debug_mode=False, timeout=35 * 60):
         """
         Setup all relevant parameters and create scenario
@@ -50,7 +48,7 @@ class TrafficLightScenario(BasicScenario):
 
         # Build behavior tree
         sequence = py_trees.composites.Sequence("TrafficLightManipulator")
-        traffic_manipulator = TrafficLightManipulator(self.ego_vehicles[0], debug=self.debug)
+        traffic_manipulator = TrafficLightManipulator(self.ego_vehicles[0], subtype=None, debug=self.debug)
         sequence.add_child(traffic_manipulator)
 
         return sequence

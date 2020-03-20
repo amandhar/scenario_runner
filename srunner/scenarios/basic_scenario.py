@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2018-2019 Intel Corporation
+# Copyright (c) 2018-2020 Intel Corporation
 #
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
@@ -34,7 +34,6 @@ class BasicScenario(object):
         if not self.timeout:     # pylint: disable=access-member-before-definition
             self.timeout = 60    # If no timeout was provided, set it to 60 seconds
 
-        self.category = None     # Scenario category, e.g. control_loss, follow_leading_vehicle, ...
         self.criteria_list = []  # List of evaluation criteria
         self.scenario = None
         # Check if the CARLA server uses the correct map
@@ -43,12 +42,13 @@ class BasicScenario(object):
 
         self.ego_vehicles = ego_vehicles
         self.name = name
+        self.config = config
         self.terminate_on_failure = terminate_on_failure
 
         # Initializing adversarial actors
         self._initialize_actors(config)
         if world.get_settings().synchronous_mode:
-            world.tick()
+            CarlaDataProvider.perform_carla_tick()
         else:
             world.wait_for_tick()
 
@@ -72,6 +72,10 @@ class BasicScenario(object):
             behavior_seq.add_child(behavior)
             behavior_seq.name = behavior.name
 
+        end_behavior = self._setup_scenario_end(config)
+        if end_behavior:
+            behavior_seq.add_child(end_behavior)
+
         self.scenario = Scenario(behavior_seq, criteria, self.name, self.timeout, self.terminate_on_failure)
 
     def _initialize_actors(self, config):
@@ -79,16 +83,12 @@ class BasicScenario(object):
         Default initialization of other actors.
         Override this method in child class to provide custom initialization.
         """
-        for actor in config.other_actors:
-            new_actor = CarlaActorPool.request_new_actor(actor.model,
-                                                         actor.transform,
-                                                         rolename=actor.rolename,
-                                                         hero=False,
-                                                         autopilot=actor.autopilot,
-                                                         random_location=actor.random_location)
-            if new_actor is None:
-                raise Exception("Error: Unable to add actor {} at {}".format(actor.model, actor.transform))
 
+        new_actors = CarlaActorPool.request_new_actors(config.other_actors)
+        if new_actors is None:
+            raise Exception("Error: Unable to add actors")
+
+        for new_actor in new_actors:
             self.other_actors.append(new_actor)
 
     def _setup_scenario_trigger(self, config):
@@ -106,14 +106,39 @@ class BasicScenario(object):
 
         if start_location:
             if ego_vehicle_route:
-                return conditions.InTriggerDistanceToLocationAlongRoute(self.ego_vehicles[0],
-                                                                        ego_vehicle_route,
-                                                                        start_location,
-                                                                        5)
+                if config.route_var_name is None:  # pylint: disable=no-else-return
+                    return conditions.InTriggerDistanceToLocationAlongRoute(self.ego_vehicles[0],
+                                                                            ego_vehicle_route,
+                                                                            start_location,
+                                                                            5)
+                else:
+                    check_name = "WaitForBlackboardVariable: {}".format(config.route_var_name)
+                    return conditions.WaitForBlackboardVariable(name=check_name,
+                                                                variable_name=config.route_var_name,
+                                                                variable_value=True,
+                                                                var_init_value=False)
+
             return conditions.InTimeToArrivalToLocation(self.ego_vehicles[0],
                                                         2.0,
                                                         start_location)
 
+        return None
+
+    def _setup_scenario_end(self, config):
+        """
+        This function adds and additional behavior to the scenario, which is triggered
+        after it has ended.
+
+        The function can be overloaded by a user implementation inside the user-defined scenario class.
+        """
+        ego_vehicle_route = CarlaDataProvider.get_ego_vehicle_route()
+
+        if ego_vehicle_route:
+            if config.route_var_name is not None:
+                set_name = "Reset Blackboard Variable: {} ".format(config.route_var_name)
+                return py_trees.blackboard.SetBlackboardVariable(name=set_name,
+                                                                 variable_name=config.route_var_name,
+                                                                 variable_value=False)
         return None
 
     def _create_behavior(self):

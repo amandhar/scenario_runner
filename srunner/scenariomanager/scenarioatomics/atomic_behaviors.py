@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2018-2019 Intel Corporation
+# Copyright (c) 2018-2020 Intel Corporation
 #
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
@@ -15,22 +15,29 @@ The atomic behaviors are implemented with py_trees.
 
 from __future__ import print_function
 
+import copy
+import math
+import operator
+import os
 import random
+import time
+import subprocess
 
 import numpy as np
 import py_trees
 from py_trees.blackboard import Blackboard
 
 import carla
-from agents.navigation.basic_agent import *
-from agents.navigation.roaming_agent import *
+from agents.navigation.basic_agent import BasicAgent, LocalPlanner
+from agents.navigation.local_planner import RoadOption
 
 from srunner.scenariomanager.carla_data_provider import CarlaActorPool, CarlaDataProvider
 from srunner.scenariomanager.timer import GameTime
 from srunner.tools.scenario_helper import detect_lane_obstacle
-
-# import scenario_helper.py
 from srunner.tools.scenario_helper import generate_target_waypoint_list_multilane
+
+
+import srunner.tools
 
 EPSILON = 0.001
 
@@ -51,13 +58,12 @@ def get_actor_control(actor):
     """
     Method to return the type of control to the actor.
     """
-    control = None
+    control = actor.get_control()
     actor_type = actor.type_id.split('.')[0]
-    if actor.type_id.split('.')[0] == 'vehicle':
-        control = carla.VehicleControl()
+    if not isinstance(actor, carla.Walker):
         control.steering = 0
-    elif actor.type_id.split('.')[0] == 'walker':
-        control = carla.WalkerControl()
+    else:
+        control.speed = 0
 
     return control, actor_type
 
@@ -73,20 +79,230 @@ class AtomicBehavior(py_trees.behaviour.Behaviour):
     - name: Name of the atomic behavior
     """
 
-    def __init__(self, name):
+    def __init__(self, name, actor=None):
+        """
+        Default init. Has to be called via super from derived class
+        """
         super(AtomicBehavior, self).__init__(name)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
         self.name = name
+        self._actor = actor
 
     def setup(self, unused_timeout=15):
+        """
+        Default setup
+        """
         self.logger.debug("%s.setup()" % (self.__class__.__name__))
         return True
 
     def initialise(self):
+        """
+        Initialise setup terminates WaypointFollowers
+        Check whether WF for this actor is running and terminate all active WFs
+        """
+        if self._actor is not None:
+            try:
+                check_attr = operator.attrgetter("running_WF_actor_{}".format(self._actor.id))
+                terminate_wf = copy.copy(check_attr(py_trees.blackboard.Blackboard()))
+                py_trees.blackboard.Blackboard().set(
+                    "terminate_WF_actor_{}".format(self._actor.id), terminate_wf, overwrite=True)
+            except AttributeError:
+                # It is ok to continue, if the Blackboard variable does not exist
+                pass
         self.logger.debug("%s.initialise()" % (self.__class__.__name__))
 
     def terminate(self, new_status):
+        """
+        Default terminate. Can be extended in derived class
+        """
         self.logger.debug("%s.terminate()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
+
+
+class RunScript(AtomicBehavior):
+
+    """
+    This is an atomic behavior to start execution of an additional script.
+
+    Args:
+        script (str): String containing the interpreter, scriptpath and arguments
+            Example: "python /path/to/script.py --arg1"
+
+    Attributes:
+        _script (str): String containing the interpreter, scriptpath and arguments
+            Example: "python /path/to/script.py --arg1"
+
+    Note:
+        This is intended for the use with OpenSCENARIO. Be aware of security side effects.
+    """
+
+    def __init__(self, script, name="RunScript"):
+        """
+        Setup parameters
+        """
+        super(RunScript, self).__init__(name)
+        self.logger.debug("%s.__init__()" % (self.__class__.__name__))
+        self._script = script
+
+    def update(self):
+        """
+        Start script
+        """
+        path = None
+        script_components = self._script.split(' ')
+        if len(script_components) > 1:
+            path = script_components[1]
+
+        if not os.path.isfile(path):
+            new_status = py_trees.common.Status.FAILURE
+            print("Script file does not exists {}".format(path))
+        else:
+            subprocess.Popen(self._script, shell=True)
+            new_status = py_trees.common.Status.SUCCESS
+
+        self.logger.debug("%s.update()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
+        return new_status
+
+
+class ActorTransformSetterToOSCPosition(AtomicBehavior):
+
+    """
+    OpenSCENARIO atomic
+    This class contains an atomic behavior to set the transform of an OpenSCENARIO actor.
+
+    Important parameters:
+    - actor: CARLA actor to execute the behavior
+    - osc_position: OpenSCENARIO position
+    - physics [optional]: If physics is true, the actor physics will be reactivated upon success
+
+    The behavior terminates when actor is set to the new actor transform (closer than 1 meter)
+
+    NOTE:
+    It is very important to ensure that the actor location is spawned to the new transform because of the
+    appearence of a rare runtime processing error. WaypointFollower with LocalPlanner,
+    might fail if new_status is set to success before the actor is really positioned at the new transform.
+    Therefore: calculate_distance(actor, transform) < 1 meter
+    """
+
+    def __init__(self, actor, osc_position, physics=True, name="ActorTransformSetterToOSCPosition"):
+        """
+        Setup parameters
+        """
+        super(ActorTransformSetterToOSCPosition, self).__init__(name, actor)
+        self._osc_position = osc_position
+        self._physics = physics
+        self._osc_transform = None
+
+    def initialise(self):
+
+        super(ActorTransformSetterToOSCPosition, self).initialise()
+
+        if self._actor.is_alive:
+            self._actor.set_velocity(carla.Vector3D(0, 0, 0))
+            self._actor.set_angular_velocity(carla.Vector3D(0, 0, 0))
+
+    def update(self):
+        """
+        Transform actor
+        """
+        new_status = py_trees.common.Status.RUNNING
+
+        # calculate transform with method in openscenario_parser.py
+        self._osc_transform = srunner.tools.openscenario_parser.OpenScenarioParser.convert_position_to_transform(
+            self._osc_position)
+        self._actor.set_transform(self._osc_transform)
+
+        if not self._actor.is_alive:
+            new_status = py_trees.common.Status.FAILURE
+
+        if calculate_distance(self._actor.get_location(), self._osc_transform.location) < 1.0:
+            if self._physics:
+                self._actor.set_simulate_physics(enabled=True)
+            new_status = py_trees.common.Status.SUCCESS
+
+        return new_status
+
+
+class SetRelativeOSCVelocity(AtomicBehavior):
+
+    """
+    OpenSCENARIO atomic
+    This class contains an atomic behavior to set a relative velocity of an OpenSCENARIO actor.
+
+    Important parameters:
+    - actor: CARLA actor to execute the behavior
+    - relative_actor: Relative CARLA actor for relative_velocity
+    - value: offset or factor for relative_velocity
+    - value_type: Must be delta or factor
+    - continuous: Boolean value, not considered
+    - duration[optional]: Maximum duration in seconds
+    - distance[optional]: Maximum distance in meters
+
+    The behavior terminates successfully after driven distance is reached or maximum duration
+    passed by. There is no check whether the target velocity is reached.
+    If duration and distance are both set to None, then the behavior will not terminate.
+    """
+
+    def __init__(self, actor, relative_actor, value, value_type, continuous,
+                 duration=None, distance=None, name="SetRelativeOSCVelocity"):
+        """
+        Setup parameters
+        """
+        super(SetRelativeOSCVelocity, self).__init__(name, actor)
+        self._relative_actor = relative_actor
+        self._value = value
+        self._value_type = value_type
+        self._continuous = continuous
+        self._duration = duration
+        self._distance = distance
+
+        self._start_time = None
+        self._start_location = None
+
+        self._control, self._type = get_actor_control(actor)
+
+    def initialise(self):
+        """
+        Set initial start values for time and location
+        """
+        self._start_time = GameTime.get_time()
+        self._start_location = CarlaDataProvider.get_location(self._actor)
+        super(SetRelativeOSCVelocity, self).initialise()
+
+    def update(self):
+        """
+        Set speed value and check termination conditions
+        """
+        new_status = py_trees.common.Status.RUNNING
+
+        actor_velocity = CarlaDataProvider.get_velocity(self._actor)
+        relative_velocity = CarlaDataProvider.get_velocity(self._relative_actor)
+
+        # get target velocity
+        if self._value_type == 'delta':
+            target_velocity = relative_velocity + self._value
+        elif self._value_type == 'factor':
+            target_velocity = relative_velocity * self._value
+        else:
+            print('self._value_type must be delta or factor')
+
+        # set target velocity
+        if actor_velocity < target_velocity:
+            self._control.throttle = 1.0
+            self._control.brake = 0.0
+        else:
+            self._control.throttle = 0.0
+            self._control.brake = 1.0
+        self._actor.apply_control(self._control)
+
+        # check duration and driven_distance
+        if (self._duration is not None) and (GameTime.get_time() - self._start_time > self._duration):
+            new_status = py_trees.common.Status.SUCCESS
+
+        driven_distance = CarlaDataProvider.get_location(self._actor).distance(self._start_location)
+        if (self._distance is not None) and (driven_distance > self._distance):
+            new_status = py_trees.common.Status.SUCCESS
+
+        return new_status
 
 
 class AccelerateToVelocity(AtomicBehavior):
@@ -109,10 +325,9 @@ class AccelerateToVelocity(AtomicBehavior):
         Setup parameters including acceleration value (via throttle_value)
         and target velocity
         """
-        super(AccelerateToVelocity, self).__init__(name)
+        super(AccelerateToVelocity, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
         self._control, self._type = get_actor_control(actor)
-        self._actor = actor
         self._throttle_value = throttle_value
         self._target_velocity = target_velocity
 
@@ -169,9 +384,8 @@ class AccelerateToCatchUp(AtomicBehavior):
         Setup parameters
         The target_speet is calculated on the fly.
         """
-        super(AccelerateToCatchUp, self).__init__(name)
+        super(AccelerateToCatchUp, self).__init__(name, actor)
 
-        self._actor = actor
         self._other_actor = other_actor
         self._throttle_value = throttle_value
         self._delta_velocity = delta_velocity  # 1m/s=3.6km/h
@@ -186,6 +400,7 @@ class AccelerateToCatchUp(AtomicBehavior):
 
         # get initial actor position
         self._initial_actor_pos = CarlaDataProvider.get_location(self._actor)
+        super(AccelerateToCatchUp, self).initialise()
 
     def update(self):
 
@@ -245,9 +460,8 @@ class KeepVelocity(AtomicBehavior):
         Setup parameters including acceleration value (via throttle_value)
         and target velocity
         """
-        super(KeepVelocity, self).__init__(name)
+        super(KeepVelocity, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
-        self._actor = actor
         self._target_velocity = target_velocity
 
         self._control, self._type = get_actor_control(actor)
@@ -332,9 +546,8 @@ class ChangeAutoPilot(AtomicBehavior):
         """
         Setup parameters
         """
-        super(ChangeAutoPilot, self).__init__(name)
+        super(ChangeAutoPilot, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
-        self._actor = actor
         self._activate = activate
 
     def update(self):
@@ -366,12 +579,11 @@ class StopVehicle(AtomicBehavior):
         """
         Setup _actor and maximum braking value
         """
-        super(StopVehicle, self).__init__(name)
+        super(StopVehicle, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
         self._control, self._type = get_actor_control(actor)
         if self._type == 'walker':
             self._control.speed = 0
-        self._actor = actor
         self._brake_value = brake_value
 
     def update(self):
@@ -419,10 +631,9 @@ class SyncArrival(AtomicBehavior):
         """
         Setup required parameters
         """
-        super(SyncArrival, self).__init__(name)
+        super(SyncArrival, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
         self._control = carla.VehicleControl()
-        self._actor = actor
         self._actor_reference = actor_reference
         self._target_location = target_location
         self._gain = gain
@@ -492,10 +703,9 @@ class AddNoiseToVehicle(AtomicBehavior):
         """
         Setup actor , maximum steer value and throttle value
         """
-        super(AddNoiseToVehicle, self).__init__(name)
+        super(AddNoiseToVehicle, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
         self._control = carla.VehicleControl()
-        self._actor = actor
         self._steer_value = steer_value
         self._throttle_value = throttle_value
 
@@ -575,12 +785,11 @@ class BasicAgentBehavior(AtomicBehavior):
         """
         Setup actor and maximum steer value
         """
-        super(BasicAgentBehavior, self).__init__(name)
+        super(BasicAgentBehavior, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
         self._agent = BasicAgent(actor)  # pylint: disable=undefined-variable
         self._agent.set_destination((target_location.x, target_location.y, target_location.z))
         self._control = carla.VehicleControl()
-        self._actor = actor
         self._target_location = target_location
 
     def update(self):
@@ -753,17 +962,43 @@ class Idle(AtomicBehavior):
 class WaypointFollower(AtomicBehavior):
 
     """
-    This is an atomic behavior to follow waypoints indefinitely
-    while maintaining a given speed or if given a waypoint plan,
-    follows the given plan
+    This is an atomic behavior to follow waypoints while maintaining a given speed.
+    If no plan is provided, the actor will follow its foward waypoints indefinetely.
+    Otherwise, the behavior will end with SUCCESS upon reaching the end of the plan.
+    If no target velocity is provided, the actor continues with its current velocity.
 
-    Important parameters:
-    - actor: CARLA actor to execute the behavior
-    - target_speed: Desired speed of the actor in m/s
-    - plan[optional]: Waypoint plan the actor should follow
-    - avoid_collision[optional]: Enable/Disable(=default) collision avoidance
+    Args:
+        actor (carla.Actor):  CARLA actor to execute the behavior.
+        target_speed (float, optional): Desired speed of the actor in m/s. Defaults to None.
+        plan ([carla.Location] or [(carla.Waypoint, carla.agent.navigation.local_planner)], optional):
+            Waypoint plan the actor should follow. Defaults to None.
+        blackboard_queue_name (str, optional):
+            Blackboard variable name, if additional actors should be created on-the-fly. Defaults to None.
+        avoid_collision (bool, optional):
+            Enable/Disable(=default) collision avoidance for vehicles/bikes. Defaults to False.
+        name (str, optional): Name of the behavior. Defaults to "FollowWaypoints".
 
-    A parallel termination behavior has to be used.
+    Attributes:
+        actor (carla.Actor):  CARLA actor to execute the behavior.
+        name (str, optional): Name of the behavior.
+        _target_speed (float, optional): Desired speed of the actor in m/s. Defaults to None.
+        _plan ([carla.Location] or [(carla.Waypoint, carla.agent.navigation.local_planner)]):
+            Waypoint plan the actor should follow. Defaults to None.
+        _blackboard_queue_name (str):
+            Blackboard variable name, if additional actors should be created on-the-fly. Defaults to None.
+        _avoid_collision (bool): Enable/Disable(=default) collision avoidance for vehicles/bikes. Defaults to False.
+        _actor_dict: Dictonary of all actors, and their corresponding plans (e.g. {actor: plan}).
+        _local_planner_list: List of local planners used for the actors. Either "Walker" for pedestrians,
+            or a carla.agent.navigation.LocalPlanner for other actors.
+        _args_lateral_dict: Parameters for the PID of the used carla.agent.navigation.LocalPlanner.
+        _unique_id: Unique ID of the behavior based on timestamp in nanoseconds.
+
+    Note:
+        OpenScenario:
+        The WaypointFollower atomic must be called with an individual name if multiple consecutive WFs.
+        Blackboard variables with lists are used for consecutive WaypointFollower behaviors.
+        Termination of active WaypointFollowers in initialise of AtomicBehavior because any
+        following behavior must terminate the WaypointFollower.
     """
 
     def __init__(self, actor, target_speed=None, plan=None, blackboard_queue_name=None,
@@ -771,9 +1006,9 @@ class WaypointFollower(AtomicBehavior):
         """
         Set up actor and local planner
         """
-        super(WaypointFollower, self).__init__(name)
-        self._actor_list = []
-        self._actor_list.append(actor)
+        super(WaypointFollower, self).__init__(name, actor)
+        self._actor_dict = {}
+        self._actor_dict[actor] = None
         self._target_speed = target_speed
         self._local_planner_list = []
         self._plan = plan
@@ -782,69 +1017,157 @@ class WaypointFollower(AtomicBehavior):
             self._queue = Blackboard().get(blackboard_queue_name)
         self._args_lateral_dict = {'K_P': 1.0, 'K_D': 0.01, 'K_I': 0.0, 'dt': 0.05}
         self._avoid_collision = avoid_collision
+        self._unique_id = 0
 
     def initialise(self):
         """
         Delayed one-time initialization
+
+        Checks if a another WaypointFollower behavior is already running for this actor.
+        If this is the case, a termination signal is sent to the running behavior.
         """
-        for actor in self._actor_list:
+        super(WaypointFollower, self).initialise()
+        self._unique_id = int(round(time.time() * 1e9))
+
+        try:
+            # check whether WF for this actor is already running and add new WF to running_WF list
+            check_attr = operator.attrgetter("running_WF_actor_{}".format(self._actor.id))
+            running = check_attr(py_trees.blackboard.Blackboard())
+            active_wf = copy.copy(running)
+            active_wf.append(self._unique_id)
+            py_trees.blackboard.Blackboard().set(
+                "running_WF_actor_{}".format(self._actor.id), active_wf, overwrite=True)
+        except AttributeError:
+            # no WF is active for this actor
+            py_trees.blackboard.Blackboard().set("terminate_WF_actor_{}".format(self._actor.id), [], overwrite=True)
+            py_trees.blackboard.Blackboard().set(
+                "running_WF_actor_{}".format(self._actor.id), [self._unique_id], overwrite=True)
+
+        for actor in self._actor_dict:
             self._apply_local_planner(actor)
         return True
 
     def _apply_local_planner(self, actor):
-
+        """
+        Convert the plan into locations for walkers (pedestrians), or to a waypoint list for other actors.
+        For non-walkers, activate the carla.agent.navigation.LocalPlanner module.
+        """
         if self._target_speed is None:
-            self._target_speed = CarlaDataProvider.get_velocity(actor) * 3.6
+            self._target_speed = CarlaDataProvider.get_velocity(actor)
         else:
-            self._target_speed = self._target_speed * 3.6
+            self._target_speed = self._target_speed
 
-        local_planner = LocalPlanner(  # pylint: disable=undefined-variable
-            actor, opt_dict={
-                'target_speed': self._target_speed,
-                'lateral_control_dict': self._args_lateral_dict})
-        if self._plan is not None:
-            local_planner.set_global_plan(self._plan)
-        self._local_planner_list.append(local_planner)
+        if isinstance(actor, carla.Walker):
+            self._local_planner_list.append("Walker")
+            if self._plan is not None:
+                if isinstance(self._plan[0], carla.Location):
+                    self._actor_dict[actor] = self._plan
+                else:
+                    self._actor_dict[actor] = [element[0].transform.location for element in self._plan]
+        else:
+            local_planner = LocalPlanner(  # pylint: disable=undefined-variable
+                actor, opt_dict={
+                    'target_speed': self._target_speed * 3.6,
+                    'lateral_control_dict': self._args_lateral_dict})
+
+            if self._plan is not None:
+                if isinstance(self._plan[0], carla.Location):
+                    plan = []
+                    for location in self._plan:
+                        waypoint = CarlaDataProvider.get_map().get_waypoint(location,
+                                                                            project_to_road=True,
+                                                                            lane_type=carla.LaneType.Any)
+                        plan.append((waypoint, RoadOption.LANEFOLLOW))
+                    local_planner.set_global_plan(plan)
+                else:
+                    local_planner.set_global_plan(self._plan)
+
+            self._local_planner_list.append(local_planner)
+            self._actor_dict[actor] = self._plan
 
     def update(self):
         """
-        Run local planner, obtain and apply control to actor
+        Compute next control step for the given waypoint plan, obtain and apply control to actor
         """
-
         new_status = py_trees.common.Status.RUNNING
+
+        check_term = operator.attrgetter("terminate_WF_actor_{}".format(self._actor.id))
+        terminate_wf = check_term(py_trees.blackboard.Blackboard())
+
+        check_run = operator.attrgetter("running_WF_actor_{}".format(self._actor.id))
+        active_wf = check_run(py_trees.blackboard.Blackboard())
+
+        # Termination of WF if the WFs unique_id is listed in terminate_wf
+        # only one WF should be active, therefore all previous WF have to be terminated
+        if self._unique_id in terminate_wf:
+            terminate_wf.remove(self._unique_id)
+            if self._unique_id in active_wf:
+                active_wf.remove(self._unique_id)
+
+            py_trees.blackboard.Blackboard().set(
+                "terminate_WF_actor_{}".format(self._actor.id), terminate_wf, overwrite=True)
+            py_trees.blackboard.Blackboard().set(
+                "running_WF_actor_{}".format(self._actor.id), active_wf, overwrite=True)
+            new_status = py_trees.common.Status.SUCCESS
+            return new_status
 
         if self._blackboard_queue_name is not None:
             while not self._queue.empty():
                 actor = self._queue.get()
-                if actor is not None and actor not in self._actor_list:
-                    self._actor_list.append(actor)
+                if actor is not None and actor not in self._actor_dict:
                     self._apply_local_planner(actor)
 
-        for actor, local_planner in zip(self._actor_list, self._local_planner_list):
+        success = True
+        for actor, local_planner in zip(self._actor_dict, self._local_planner_list):
             if actor is not None and actor.is_alive and local_planner is not None:
-                control = local_planner.run_step(debug=False)
-                if self._avoid_collision and detect_lane_obstacle(actor):
-                    control.throttle = 0.0
-                    control.brake = 1.0
-                actor.apply_control(control)
+                # Check if the actor is a vehicle/bike
+                if not isinstance(actor, carla.Walker):
+                    control = local_planner.run_step(debug=False)
+                    if self._avoid_collision and detect_lane_obstacle(actor):
+                        control.throttle = 0.0
+                        control.brake = 1.0
+                    actor.apply_control(control)
+                    # Check if the actor reached the end of the plan
+                    # @TODO replace access to private _waypoints_queue with public getter
+                    if local_planner._waypoints_queue:  # pylint: disable=protected-access
+                        success = False
+                # If the actor is a pedestrian, we have to use the WalkerAIController
+                # The walker is sent to the next waypoint in its plan
+                else:
+                    actor_location = CarlaDataProvider.get_location(actor)
+                    if self._actor_dict[actor]:
+                        success = False
+                        location = self._actor_dict[actor][0]
+                        direction = location - actor_location
+                        direction_norm = math.sqrt(direction.x**2 + direction.y**2)
+                        if direction_norm > 1.0:
+                            control = actor.get_control()
+                            control.speed = self._target_speed
+                            control.direction = direction / direction_norm
+                            actor.apply_control(control)
+                        else:
+                            self._actor_dict[actor] = self._actor_dict[actor][1:]
+
+        if success:
+            new_status = py_trees.common.Status.SUCCESS
 
         return new_status
 
     def terminate(self, new_status):
         """
         On termination of this behavior,
-        the throttle, brake and steer should be set back to 0.
+        the controls should be set back to 0.
         """
-        control = carla.VehicleControl()
-        control.throttle = 0.0
-        control.brake = 0.0
-        control.steer = 0.0
-        for actor, local_planner in zip(self._actor_list, self._local_planner_list):
+        for actor, local_planner in zip(self._actor_dict, self._local_planner_list):
             if actor is not None and actor.is_alive:
+                control, _ = get_actor_control(actor)
                 actor.apply_control(control)
-            if local_planner is not None:
-                local_planner.reset_vehicle()
-                local_planner = None
+                if local_planner is not None and local_planner != "Walker":
+                    local_planner.reset_vehicle()
+                    local_planner = None
+
+        self._local_planner_list = []
+        self._actor_dict = {}
         super(WaypointFollower, self).terminate(new_status)
 
 
@@ -863,23 +1186,22 @@ class LaneChange(WaypointFollower):
     - direction: 'right' or 'left', depending on which lane to change
     - distance_same_lane: straight distance before lane change, in m
     - distance_other_lane: straight distance after lane change, in m
+    - distance_lane_change: straight distance for the lane change itself, in m
 
     The total distance driven is greater than the sum of distance_same_lane and distance_other_lane.
     It results from the lane change distance plus the distance_same_lane plus distance_other_lane.
     The lane change distance is set to 25m (straight), the driven distance is slightly greater.
 
     A parallel termination behavior has to be used.
-
-
     """
 
     def __init__(self, actor, speed=10, direction='left',
-                 distance_same_lane=5, distance_other_lane=100, name='LaneChange'):
+                 distance_same_lane=5, distance_other_lane=100, distance_lane_change=25, name='LaneChange'):
 
-        self._actor = actor
         self._direction = direction
         self._distance_same_lane = distance_same_lane
         self._distance_other_lane = distance_other_lane
+        self._distance_lane_change = distance_lane_change
 
         self._target_lane_id = None
         self._distance_new_lane = 0
@@ -895,7 +1217,7 @@ class LaneChange(WaypointFollower):
         # calculate plan with scenario_helper function
         self._plan, self._target_lane_id = generate_target_waypoint_list_multilane(
             position_actor, self._direction, self._distance_same_lane,
-            self._distance_other_lane, check='true')
+            self._distance_other_lane, self._distance_lane_change, check='true')
         super(LaneChange, self).initialise()
 
     def update(self):
@@ -911,12 +1233,65 @@ class LaneChange(WaypointFollower):
             if distance > 50:
                 # long enough distance on new lane --> SUCCESS
                 status = py_trees.common.Status.SUCCESS
-
         else:
             # no lane change yet
             self._pos_before_lane_change = current_position_actor.transform.location
 
         return status
+
+
+class SetOSCInitSpeed(WaypointFollower):
+
+    """
+    OpenSCENARIO atomic
+    This class inherits from the class WaypointFollower.
+    This class contains an atomic behavior to set the init_speed of an OpenSCENARIO actor.
+
+    Important parameters:
+    - actor: CARLA actor to execute the behavior
+    - init_speed: initial actor speed when scenario starts, in m/s
+
+    Termination of behavior with blackboard variable which is set in
+    super(classname, self).initialise() of all other behavioral atomics.
+    """
+
+    def __init__(self, actor, init_speed=10, name='SetOSCInitSpeed'):
+
+        self._init_speed = init_speed
+        self._terminate = None
+
+        super(SetOSCInitSpeed, self).__init__(actor, target_speed=init_speed, name=name)
+
+    def initialise(self):
+        """
+        Calculate the init_velocity and set blackboard variable
+        terminate_init_speed_actor_ID to False to stop termination of behavior
+        """
+        super(SetOSCInitSpeed, self).initialise()
+
+        transform = self._actor.get_transform()
+        yaw = transform.rotation.yaw * (math.pi / 180)
+
+        vx = math.cos(yaw) * self._init_speed
+        vy = math.sin(yaw) * self._init_speed
+        self._actor.set_velocity(carla.Vector3D(vx, vy, 0))
+
+    def update(self):
+        """
+        Run local planner and calculate a new velocity if the deviation from target_speed
+        is greater than 3m/s. Check whether the SetOSCInitSpeed behavior should terminate by
+        checking the corresponding blackboard variable.
+        """
+        new_status = super(SetOSCInitSpeed, self).update()
+
+        # set velocity, workaround because local planner doesn't hold velocity
+        if abs(self._init_speed - CarlaDataProvider.get_velocity(self._actor)) > 3:
+            yaw = CarlaDataProvider.get_transform(self._actor).rotation.yaw * (math.pi / 180)
+            vx = math.cos(yaw) * self._init_speed
+            vy = math.sin(yaw) * self._init_speed
+            self._actor.set_velocity(carla.Vector3D(vx, vy, 0))
+
+        return new_status
 
 
 class HandBrakeVehicle(AtomicBehavior):
@@ -975,8 +1350,7 @@ class ActorDestroy(AtomicBehavior):
         """
         Setup actor
         """
-        super(ActorDestroy, self).__init__(name)
-        self._actor = actor
+        super(ActorDestroy, self).__init__(name, actor)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
 
     def update(self):
@@ -1000,7 +1374,7 @@ class ActorTransformSetter(AtomicBehavior):
     - transform: New target transform (position + orientation) of the actor
     - physics [optional]: If physics is true, the actor physics will be reactivated upon success
 
-    The behavior terminates after trying to set the new actor transform
+    The behavior terminates when actor is set to the new actor transform (closer than 1 meter)
 
     NOTE:
     It is very important to ensure that the actor location is spawned to the new transform because of the
@@ -1013,8 +1387,7 @@ class ActorTransformSetter(AtomicBehavior):
         """
         Init
         """
-        super(ActorTransformSetter, self).__init__(name)
-        self._actor = actor
+        super(ActorTransformSetter, self).__init__(name, actor)
         self._transform = transform
         self._physics = physics
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
@@ -1024,6 +1397,7 @@ class ActorTransformSetter(AtomicBehavior):
             self._actor.set_velocity(carla.Vector3D(0, 0, 0))
             self._actor.set_angular_velocity(carla.Vector3D(0, 0, 0))
             self._actor.set_transform(self._transform)
+        super(ActorTransformSetter, self).initialise()
 
     def update(self):
         """
@@ -1149,7 +1523,7 @@ class ActorSource(AtomicBehavior):
                     new_actor = CarlaActorPool.request_new_actor(np.random.choice(self._actor_types), self._spawn_point)
                     self._actor_limit -= 1
                     self._queue.put(new_actor)
-                except:
+                except:                             # pylint: disable=bare-except
                     print("ActorSource unable to spawn actor")
         return new_status
 
@@ -1185,96 +1559,384 @@ class ActorSink(AtomicBehavior):
 class TrafficLightManipulator(AtomicBehavior):
 
     """
-    Atomic behavior that manipulates traffic lights around the ego_vehicle
-    This scenario stops when blackboard.get('master_scenario_command') == scenarios_stop_request
+    Atomic behavior that manipulates traffic lights around the ego_vehicle to trigger scenarios 7 to 10.
+    This is done by setting 2 of the traffic light at the intersection to green (with some complex precomputation
+    to set everything up).
 
     Important parameters:
     - ego_vehicle: CARLA actor that controls this behavior
-
-    This behavior stops when blackboard.get('master_scenario_command') == scenarios_stop_request
+    - subtype: string that gathers information of the route and scenario number
+      (check SUBTYPE_CONFIG_TRANSLATION below)
     """
 
-    MAX_DISTANCE_TRAFFIC_LIGHT = 15
-    RANDOM_VALUE_INTERVENTION = 0.4
     RED = carla.TrafficLightState.Red
+    YELLOW = carla.TrafficLightState.Yellow
     GREEN = carla.TrafficLightState.Green
 
-    INT_CONF_OPP = {'ego': GREEN, 'ref': GREEN, 'left': RED, 'right': RED, 'opposite': GREEN}
-    INT_CONF_LFT = {'ego': GREEN, 'ref': GREEN, 'left': GREEN, 'right': RED, 'opposite': RED}
-    INT_CONF_RGT = {'ego': GREEN, 'ref': GREEN, 'left': RED, 'right': GREEN, 'opposite': RED}
-    INTERSECTION_CONFIGURATIONS = [INT_CONF_OPP, INT_CONF_LFT, INT_CONF_RGT]
+    # Time constants
+    RED_TIME = 1.5  # Minimum time the ego vehicle waits in red (seconds)
+    YELLOW_TIME = 2  # Time spent at yellow state (seconds)
+    RESET_TIME = 6  # Time waited before resetting all the junction (seconds)
 
-    def __init__(self, ego_vehicle, debug=False, name="TrafficLightManipulator"):
+    # Experimental values
+    TRIGGER_DISTANCE = 10  # Distance that makes all vehicles in the lane enter the junction (meters)
+    DIST_TO_WAITING_TIME = 0.04  # Used to wait longer at larger intersections (s/m)
+
+    INT_CONF_OPP1 = {'ego': RED, 'ref': RED, 'left': RED, 'right': RED, 'opposite': GREEN}
+    INT_CONF_OPP2 = {'ego': GREEN, 'ref': GREEN, 'left': RED, 'right': RED, 'opposite': GREEN}
+    INT_CONF_LFT1 = {'ego': RED, 'ref': RED, 'left': GREEN, 'right': RED, 'opposite': RED}
+    INT_CONF_LFT2 = {'ego': GREEN, 'ref': GREEN, 'left': GREEN, 'right': RED, 'opposite': RED}
+    INT_CONF_RGT1 = {'ego': RED, 'ref': RED, 'left': RED, 'right': GREEN, 'opposite': RED}
+    INT_CONF_RGT2 = {'ego': GREEN, 'ref': GREEN, 'left': RED, 'right': GREEN, 'opposite': RED}
+
+    INT_CONF_REF1 = {'ego': GREEN, 'ref': GREEN, 'left': RED, 'right': RED, 'opposite': RED}
+    INT_CONF_REF2 = {'ego': YELLOW, 'ref': YELLOW, 'left': RED, 'right': RED, 'opposite': RED}
+
+    # Depending on the scenario, IN ORDER OF IMPORTANCE, the traffic light changed
+    # The list has to contain only items of the INT_CONF
+    SUBTYPE_CONFIG_TRANSLATION = {
+        'S7left': ['left', 'opposite', 'right'],
+        'S7right': ['left', 'opposite'],
+        'S7opposite': ['right', 'left', 'opposite'],
+        'S8left': ['opposite'],
+        'S9right': ['left', 'opposite']
+    }
+
+    CONFIG_TLM_TRANSLATION = {
+        'left': [INT_CONF_LFT1, INT_CONF_LFT2],
+        'right': [INT_CONF_RGT1, INT_CONF_RGT2],
+        'opposite': [INT_CONF_OPP1, INT_CONF_OPP2]
+    }
+
+    def __init__(self, ego_vehicle, subtype, debug=False, name="TrafficLightManipulator"):
         super(TrafficLightManipulator, self).__init__(name)
         self.ego_vehicle = ego_vehicle
+        self.subtype = subtype
+        self.current_step = 1
         self.debug = debug
-        self.blackboard = Blackboard()
-        self.target_traffic_light = None
+
+        self.traffic_light = None
         self.annotations = None
-        self.reset_annotations = None
-        self.intervention = False
+        self.configuration = None
+        self.prev_junction_state = None
+        self.junction_location = None
+        self.seconds_waited = 0
+        self.prev_time = None
+        self.max_trigger_distance = None
+        self.waiting_time = None
+        self.inside_junction = False
+
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
 
     def update(self):
-        master_scenario_command = self.blackboard.get('master_scenario_command')
-        if master_scenario_command and master_scenario_command == 'scenarios_stop_request':
-            new_status = py_trees.common.Status.SUCCESS
-            return new_status
-        else:
-            new_status = py_trees.common.Status.RUNNING
 
-        # find a suitable target
-        if not self.target_traffic_light:
-            traffic_light = CarlaDataProvider.get_next_traffic_light(self.ego_vehicle, use_cached_location=False)
-            if not traffic_light:
+        new_status = py_trees.common.Status.RUNNING
+
+        # 1) Set up the parameters
+        if self.current_step == 1:
+
+            # Traffic light affecting the ego vehicle
+            self.traffic_light = CarlaDataProvider.get_next_traffic_light(self.ego_vehicle, use_cached_location=False)
+            if not self.traffic_light:
                 # nothing else to do in this iteration...
                 return new_status
 
-            base_transform = traffic_light.get_transform()
-            area_loc = carla.Location(base_transform.transform(traffic_light.trigger_volume.location))
-            distance_to_traffic_light = area_loc.distance(self.ego_vehicle.get_location())
+            # "Topology" of the intersection
+            self.annotations = CarlaDataProvider.annotate_trafficlight_in_group(self.traffic_light)
+
+            # Which traffic light will be modified (apart from the ego lane)
+            self.configuration = self.get_traffic_light_configuration(self.subtype, self.annotations)
+            if self.configuration is None:
+                self.current_step = 0  # End the behavior
+                return new_status
+
+            # Modify the intersection. Store the previous state
+            self.prev_junction_state = self.set_intersection_state(self.INT_CONF_REF1)
+
+            self.current_step += 1
+            if self.debug:
+                print("--- All set up")
+
+        # 2) Modify the ego lane to yellow when closeby
+        elif self.current_step == 2:
+
+            ego_location = CarlaDataProvider.get_location(self.ego_vehicle)
+
+            if self.junction_location is None:
+                ego_waypoint = CarlaDataProvider.get_map().get_waypoint(ego_location)
+                junction_waypoint = ego_waypoint.next(0.5)[0]
+                while not junction_waypoint.is_junction:
+                    next_wp = junction_waypoint.next(0.5)[0]
+                    junction_waypoint = next_wp
+                self.junction_location = junction_waypoint.transform.location
+
+            distance = ego_location.distance(self.junction_location)
+
+            # Failure check
+            if self.max_trigger_distance is None:
+                self.max_trigger_distance = distance + 1
+            if distance > self.max_trigger_distance:
+                self.current_step = 0
+
+            elif distance < self.TRIGGER_DISTANCE:
+                _ = self.set_intersection_state(self.INT_CONF_REF2)
+                self.current_step += 1
 
             if self.debug:
-                print("[{}] distance={}".format(traffic_light.id, distance_to_traffic_light))
+                print("--- Distance until traffic light changes: {}".format(distance))
 
-            if distance_to_traffic_light < self.MAX_DISTANCE_TRAFFIC_LIGHT:
-                self.target_traffic_light = traffic_light
-                self.intervention = random.random() > self.RANDOM_VALUE_INTERVENTION
+        # 3) Modify the ego lane to red and the chosen one to green after several seconds
+        elif self.current_step == 3:
 
-                if self.intervention:
+            if self.passed_enough_time(self.YELLOW_TIME):
+                _ = self.set_intersection_state(self.CONFIG_TLM_TRANSLATION[self.configuration][0])
+
+                self.current_step += 1
+
+        # 4) Wait a bit to let vehicles enter the intersection, then set the ego lane to green
+        elif self.current_step == 4:
+
+            # Get the time in red, dependent on the intersection dimensions
+            if self.waiting_time is None:
+                self.waiting_time = self.get_waiting_time(self.annotations, self.configuration)
+
+            if self.passed_enough_time(self.waiting_time):
+                _ = self.set_intersection_state(self.CONFIG_TLM_TRANSLATION[self.configuration][1])
+
+                self.current_step += 1
+
+        # 5) Wait for the end of the intersection
+        elif self.current_step == 5:
+            # the traffic light has been manipulated, wait until the vehicle finsihes the intersection
+            ego_location = CarlaDataProvider.get_location(self.ego_vehicle)
+            ego_waypoint = CarlaDataProvider.get_map().get_waypoint(ego_location)
+
+            if not self.inside_junction:
+                if ego_waypoint.is_junction:
+                    # Wait for the ego_vehicle to enter a junction
+                    self.inside_junction = True
+                else:
                     if self.debug:
-                        print("--- We are going to affect the following intersection")
-                        loc = self.target_traffic_light.get_location()
-                        CarlaDataProvider.get_world().debug.draw_point(loc + carla.Location(z=1.0),
-                                                                       size=0.5, color=carla.Color(255, 255, 0),
-                                                                       life_time=50000)
-                    self.annotations = CarlaDataProvider.annotate_trafficlight_in_group(self.target_traffic_light)
-        else:
-            if not self.reset_annotations:
-                if self.intervention:
-                    # the light has not been manipulated yet
-                    choice = random.choice(self.INTERSECTION_CONFIGURATIONS)
-                    self.reset_annotations = CarlaDataProvider.update_light_states(
-                        self.target_traffic_light,
-                        self.annotations,
-                        choice,
-                        freeze=True)
+                        print("--- Waiting to ENTER a junction")
 
             else:
-                # the traffic light has been manipulated...
-                base_transform = self.target_traffic_light.get_transform()
-                area_loc = carla.Location(base_transform.transform(self.target_traffic_light.trigger_volume.location))
-                distance_to_traffic_light = area_loc.distance(self.ego_vehicle.get_location())
+                if ego_waypoint.is_junction:
+                    if self.debug:
+                        print("--- Waiting to EXIT a junction")
+                else:
+                    # And to leave it
+                    self.inside_junction = False
+                    self.current_step += 1
 
+        # 6) At the end (or if something failed), reset to the previous state
+        else:
+            if self.prev_junction_state:
+                CarlaDataProvider.reset_lights(self.prev_junction_state)
                 if self.debug:
-                    print("++ distance={}".format(distance_to_traffic_light))
+                    print("--- Returning the intersection to its previous state")
 
-                if distance_to_traffic_light > self.MAX_DISTANCE_TRAFFIC_LIGHT:
-                    if self.reset_annotations:
-                        CarlaDataProvider.reset_lights(self.reset_annotations)
-                        self.target_traffic_light = None
-                        self.reset_annotations = None
-                        self.annotations = None
-                        self.intervention = False
+            self.variable_cleanup()
+            new_status = py_trees.common.Status.SUCCESS
+
+        return new_status
+
+    def passed_enough_time(self, time_limit):
+        """
+        Returns true or false depending on the time that has passed from the
+        first time this function was called
+        """
+        # Start the timer
+        if self.prev_time is None:
+            self.prev_time = GameTime.get_time()
+
+        timestamp = GameTime.get_time()
+        self.seconds_waited += (timestamp - self.prev_time)
+        self.prev_time = timestamp
+
+        if self.debug:
+            print("--- Waited seconds: {}".format(self.seconds_waited))
+
+        if self.seconds_waited >= time_limit:
+            self.seconds_waited = 0
+            self.prev_time = None
+
+            return True
+        return False
+
+    def set_intersection_state(self, choice):
+        """
+        Changes the intersection to the desired state
+        """
+        prev_state = CarlaDataProvider.update_light_states(
+            self.traffic_light,
+            self.annotations,
+            choice,
+            freeze=True)
+
+        return prev_state
+
+    def get_waiting_time(self, annotation, direction):
+        """
+        Calculates the time the ego traffic light will remain red
+        to let vehicles enter the junction
+        """
+
+        tl = annotation[direction][0]
+        ego_tl = annotation["ref"][0]
+
+        tl_location = CarlaDataProvider.get_trafficlight_trigger_location(tl)
+        ego_tl_location = CarlaDataProvider.get_trafficlight_trigger_location(ego_tl)
+
+        distance = ego_tl_location.distance(tl_location)
+
+        return self.RED_TIME + distance * self.DIST_TO_WAITING_TIME
+
+    def get_traffic_light_configuration(self, subtype, annotations):
+        """
+        Checks the list of possible altered traffic lights and gets
+        the first one that exists in the intersection
+
+        Important parameters:
+        - subtype: Subtype of the scenario
+        - annotations: list of the traffic light of the junction, with their direction (right, left...)
+        """
+        configuration = None
+
+        if subtype in self.SUBTYPE_CONFIG_TRANSLATION:
+            possible_configurations = self.SUBTYPE_CONFIG_TRANSLATION[self.subtype]
+            while possible_configurations:
+                # Chose the first one and delete it
+                configuration = possible_configurations[0]
+                possible_configurations = possible_configurations[1:]
+                if configuration in annotations:
+                    if annotations[configuration]:
+                        # Found a valid configuration
+                        break
+                    else:
+                        # The traffic light doesn't exist, get another one
+                        configuration = None
+                else:
+                    if self.debug:
+                        print("This configuration name is wrong")
+                    configuration = None
+
+            if configuration is None and self.debug:
+                print("This subtype has no traffic light available")
+        else:
+            if self.debug:
+                print("This subtype is unknown")
+
+        return configuration
+
+    def variable_cleanup(self):
+        """
+        Resets all variables to the intial state
+        """
+        self.current_step = 1
+        self.traffic_light = None
+        self.annotations = None
+        self.configuration = None
+        self.prev_junction_state = None
+        self.junction_location = None
+        self.max_trigger_distance = None
+        self.waiting_time = None
+        self.inside_junction = False
+
+
+class ScenarioTriggerer(AtomicBehavior):
+
+    """
+    Handles the triggering of the scenarios that are part of a route.
+
+    Initializes a list of blackboard variables to False, and only sets them to True when
+    the ego vehicle is very close to the scenarios
+    """
+
+    WINDOWS_SIZE = 5
+
+    def __init__(self, actor, route, blackboard_list, distance,
+                 repeat_scenarios=False, debug=False, name="ScenarioTriggerer"):
+        """
+        Setup class members
+        """
+        super(ScenarioTriggerer, self).__init__(name)
+        self._world = CarlaDataProvider.get_world()
+        self._map = CarlaDataProvider.get_map()
+        self._repeat = repeat_scenarios
+        self._debug = debug
+
+        self._actor = actor
+        self._route = route
+        self._distance = distance
+        self._blackboard_list = blackboard_list
+        self._triggered_scenarios = []  # List of already done scenarios
+
+        self._current_index = 0
+        self._route_length = len(self._route)
+        self._waypoints, _ = zip(*self._route)
+
+    def update(self):
+        new_status = py_trees.common.Status.RUNNING
+
+        location = CarlaDataProvider.get_location(self._actor)
+        if location is None:
+            return new_status
+
+        lower_bound = self._current_index
+        upper_bound = min(self._current_index + self.WINDOWS_SIZE + 1, self._route_length)
+
+        shortest_distance = float('inf')
+        closest_index = -1
+
+        for index in range(lower_bound, upper_bound):
+            ref_waypoint = self._waypoints[index]
+            ref_location = ref_waypoint.location
+
+            dist_to_route = ref_location.distance(location)
+            if dist_to_route <= shortest_distance:
+                closest_index = index
+                shortest_distance = dist_to_route
+
+        if closest_index == -1 or shortest_distance == float('inf'):
+            return new_status
+
+        # Update the ego position at the route
+        self._current_index = closest_index
+
+        route_location = self._waypoints[closest_index].location
+
+        # Check which scenarios can be triggered
+        blackboard = py_trees.blackboard.Blackboard()
+        for black_var_name, scen_location in self._blackboard_list:
+
+            # Close enough
+            scen_distance = route_location.distance(scen_location)
+            condition1 = bool(scen_distance < self._distance)
+
+            # Not being currently done
+            value = blackboard.get(black_var_name)
+            condition2 = bool(not value)
+
+            # Already done, if needed
+            condition3 = bool(self._repeat or black_var_name not in self._triggered_scenarios)
+
+            if condition1 and condition2 and condition3:
+                _ = blackboard.set(black_var_name, True)
+                self._triggered_scenarios.append(black_var_name)
+
+                if self._debug:
+                    self._world.debug.draw_point(
+                        scen_location + carla.Location(z=4),
+                        size=0.5,
+                        life_time=0.5,
+                        color=carla.Color(255, 255, 0)
+                    )
+                    self._world.debug.draw_string(
+                        scen_location + carla.Location(z=5),
+                        str(black_var_name),
+                        False,
+                        color=carla.Color(0, 0, 0),
+                        life_time=1000
+                    )
 
         return new_status

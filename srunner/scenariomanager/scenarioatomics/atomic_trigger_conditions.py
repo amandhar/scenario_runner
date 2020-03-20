@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2018-2019 Intel Corporation
+# Copyright (c) 2018-2020 Intel Corporation
 #
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
@@ -14,7 +14,7 @@ For example, such a condition could be "InTriggerRegion", which checks
 that a given actor reached a certain region on the map, and then starts/stops
 a behavior of this actor.
 
-The atomics are implemented with py_trees and make use of the AtomicBehavior
+The atomics are implemented with py_trees and make use of the AtomicCondition
 base class
 """
 
@@ -23,18 +23,174 @@ from __future__ import print_function
 import operator
 import py_trees
 
-from agents.navigation.basic_agent import *
-from agents.navigation.roaming_agent import *
-
-from srunner.scenariomanager.scenarioatomics.atomic_behaviors import AtomicBehavior, calculate_distance
+from srunner.scenariomanager.scenarioatomics.atomic_behaviors import calculate_distance
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 from srunner.scenariomanager.timer import GameTime
 from srunner.tools.scenario_helper import get_distance_along_route
 
+import srunner.tools
+
 EPSILON = 0.001
 
 
-class StandStill(AtomicBehavior):
+class AtomicCondition(py_trees.behaviour.Behaviour):
+
+    """
+    Base class for all atomic conditions used to setup a scenario
+
+    *All behaviors should use this class as parent*
+
+    Important parameters:
+    - name: Name of the atomic condition
+    """
+
+    def __init__(self, name):
+        """
+        Default init. Has to be called via super from derived class
+        """
+        super(AtomicCondition, self).__init__(name)
+        self.logger.debug("%s.__init__()" % (self.__class__.__name__))
+        self.name = name
+
+    def setup(self, unused_timeout=15):
+        """
+        Default setup
+        """
+        self.logger.debug("%s.setup()" % (self.__class__.__name__))
+        return True
+
+    def initialise(self):
+        """
+        Initialise setup
+        """
+        self.logger.debug("%s.initialise()" % (self.__class__.__name__))
+
+    def terminate(self, new_status):
+        """
+        Default terminate. Can be extended in derived class
+        """
+        self.logger.debug("%s.terminate()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
+
+
+class InTriggerDistanceToOSCPosition(AtomicCondition):
+
+    """
+    OpenSCENARIO atomic
+    This class contains the trigger condition for a distance to an OpenSCENARIO position
+
+    Important parameters:
+    - actor: CARLA actor to execute the behavior
+    - osc_position: OpenSCENARIO position
+    - distance: Trigger distance between the actor and the target location in meters
+    - name: Name of the condition
+
+    The condition terminates with SUCCESS, when the actor reached the target distance to the openSCENARIO position
+    """
+
+    def __init__(self,
+                 actor,
+                 osc_position,
+                 distance,
+                 comparison_operator=operator.lt,
+                 name="InTriggerDistanceToOSCPosition"):
+        """
+        Setup parameters
+        """
+        super(InTriggerDistanceToOSCPosition, self).__init__(name)
+        self._actor = actor
+        self._osc_position = osc_position
+        self._distance = distance
+        self._comparison_operator = comparison_operator
+
+    def initialise(self):
+        if self._distance < 0:
+            raise ValueError("distance value must be positive")
+
+    def update(self):
+        """
+        Check if actor is in trigger distance
+        """
+        new_status = py_trees.common.Status.RUNNING
+
+        # calculate transform with method in openscenario_parser.py
+        osc_transform = srunner.tools.openscenario_parser.OpenScenarioParser.convert_position_to_transform(
+            self._osc_position)
+
+        if osc_transform is not None:
+            osc_location = osc_transform.location
+            actor_location = CarlaDataProvider.get_location(self._actor)
+            distance = calculate_distance(osc_location, actor_location)
+
+            if self._comparison_operator(distance, self._distance):
+                new_status = py_trees.common.Status.SUCCESS
+
+        return new_status
+
+
+class InTimeToArrivalToOSCPosition(AtomicCondition):
+
+    """
+    OpenSCENARIO atomic
+    This class contains a trigger if an actor arrives within a given time to an OpenSCENARIO position
+
+    Important parameters:
+    - actor: CARLA actor to execute the behavior
+    - osc_position: OpenSCENARIO position
+    - time: The behavior is successful, if TTA is less than _time_ in seconds
+    - name: Name of the condition
+
+    The condition terminates with SUCCESS, when the actor can reach the position within the given time
+    """
+
+    def __init__(self, actor, osc_position, time, comparison_operator=operator.lt, name="InTimeToArrivalToOSCPosition"):
+        """
+        Setup parameters
+        """
+        super(InTimeToArrivalToOSCPosition, self).__init__(name)
+        self._actor = actor
+        self._osc_position = osc_position
+        self._time = float(time)
+        self._comparison_operator = comparison_operator
+
+    def initialise(self):
+        if self._time < 0:
+            raise ValueError("time value must be positive")
+
+    def update(self):
+        """
+        Check if actor can arrive within trigger time
+        """
+        new_status = py_trees.common.Status.RUNNING
+
+        # calculate transform with method in openscenario_parser.py
+        try:
+            osc_transform = srunner.tools.openscenario_parser.OpenScenarioParser.convert_position_to_transform(
+                self._osc_position)
+        except AttributeError:
+            return py_trees.common.Status.FAILURE
+        target_location = osc_transform.location
+        actor_location = CarlaDataProvider.get_location(self._actor)
+
+        if target_location is None or actor_location is None:
+            return new_status
+
+        distance = calculate_distance(actor_location, target_location)
+        actor_velocity = CarlaDataProvider.get_velocity(self._actor)
+
+        # time to arrival
+        if actor_velocity > 0:
+            time_to_arrival = distance / actor_velocity
+        elif distance == 0:
+            time_to_arrival = 0
+        else:
+            time_to_arrival = float('inf')
+
+        if self._comparison_operator(time_to_arrival, self._time):
+            new_status = py_trees.common.Status.SUCCESS
+        return new_status
+
+
+class StandStill(AtomicCondition):
 
     """
     This class contains a standstill behavior of a scenario
@@ -73,8 +229,8 @@ class StandStill(AtomicBehavior):
 
         velocity = CarlaDataProvider.get_velocity(self._actor)
 
-        if velocity < EPSILON:
-            new_status = py_trees.common.Status.SUCCESS
+        if velocity > EPSILON:
+            self._start_time = GameTime.get_time()
 
         if GameTime.get_time() - self._start_time > self._duration:
             new_status = py_trees.common.Status.SUCCESS
@@ -84,7 +240,7 @@ class StandStill(AtomicBehavior):
         return new_status
 
 
-class TriggerVelocity(AtomicBehavior):
+class TriggerVelocity(AtomicCondition):
 
     """
     This class contains the trigger velocity (condition) of a scenario
@@ -121,26 +277,28 @@ class TriggerVelocity(AtomicBehavior):
         return new_status
 
 
-class AtStartCondition(AtomicBehavior):
+class OSCStartEndCondition(AtomicCondition):
 
     """
-    This class contains a check if a named story element has started.
+    This class contains a check if a named story element has started/terminated.
 
     Important parameters:
     - element_name: The story element's name attribute
     - element_type: The element type [act,scene,maneuver,event,action]
+    - rule: One or more of [START, END, CANCEL]
 
     The condition terminates with SUCCESS, when the named story element starts
     """
 
-    def __init__(self, element_type, element_name):
+    def __init__(self, element_type, element_name, rule, name="OSCStartEndCondition"):
         """
         Setup element details
         """
-        super(AtStartCondition, self).__init__("AtStartCondition")
+        super(OSCStartEndCondition, self).__init__(name)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
-        self._element_type = element_type
+        self._element_type = element_type.upper()
         self._element_name = element_name
+        self._rule = rule.upper()
         self._start_time = None
         self._blackboard = py_trees.blackboard.Blackboard()
 
@@ -149,53 +307,14 @@ class AtStartCondition(AtomicBehavior):
         Initialize the start time of this condition
         """
         self._start_time = GameTime.get_time()
-        super(AtStartCondition, self).initialise()
+        super(OSCStartEndCondition, self).initialise()
 
     def update(self):
         """
-        Check if the specified story element has started since the beginning of the condition
+        Check if the specified story element has started/ended since the beginning of the condition
         """
         new_status = py_trees.common.Status.RUNNING
 
-        blackboard_variable_name = "({}){}-{}".format(self._element_type.upper(), self._element_name, "START")
-        element_start_time = self._blackboard.get(blackboard_variable_name)
-        if element_start_time and element_start_time >= self._start_time:
-            new_status = py_trees.common.Status.SUCCESS
-
-        self.logger.debug("%s.update()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
-
-        return new_status
-
-
-class AfterTerminationCondition(AtomicBehavior):
-
-    """
-    This class contains a check if a named story element has terminated.
-
-    Important parameters:
-    - element_name: The story element's name attribute
-    - element_type: The element type [act,scene,maneuver,event,action]
-
-    The condition terminates with SUCCESS, when the named story element ends
-    """
-
-    def __init__(self, element_type, element_name, rule):
-        """
-        Setup element details
-        """
-        super(AfterTerminationCondition, self).__init__("AfterTerminationCondition")
-        self.logger.debug("%s.__init__()" % (self.__class__.__name__))
-        self._element_type = element_type.upper()
-        self._element_name = element_name
-        self._rule = rule.upper()
-        self._start_time = GameTime.get_time()
-        self._blackboard = py_trees.blackboard.Blackboard()
-
-    def update(self):
-        """
-        Check if the specified story element has ended since the beginning of the condition
-        """
-        new_status = py_trees.common.Status.RUNNING
         if self._rule == "ANY":
             rules = ["END", "CANCEL"]
         else:
@@ -213,7 +332,7 @@ class AfterTerminationCondition(AtomicBehavior):
         return new_status
 
 
-class InTriggerRegion(AtomicBehavior):
+class InTriggerRegion(AtomicCondition):
 
     """
     This class contains the trigger region (condition) of a scenario
@@ -260,7 +379,7 @@ class InTriggerRegion(AtomicBehavior):
         return new_status
 
 
-class InTriggerDistanceToVehicle(AtomicBehavior):
+class InTriggerDistanceToVehicle(AtomicCondition):
 
     """
     This class contains the trigger distance (condition) between to actors
@@ -268,20 +387,22 @@ class InTriggerDistanceToVehicle(AtomicBehavior):
 
     Important parameters:
     - actor: CARLA actor to execute the behavior
-    - other_actor: Reference CARLA actor
+    - reference_actor: Reference CARLA actor
     - name: Name of the condition
     - distance: Trigger distance between the two actors in meters
+    - dx, dy, dz: distance to reference_location (location of reference_actor)
 
     The condition terminates with SUCCESS, when the actor reached the target distance to the other actor
     """
 
-    def __init__(self, other_actor, actor, distance, comparison_operator=operator.lt, name="TriggerDistanceToVehicle"):
+    def __init__(self, reference_actor, actor, distance, comparison_operator=operator.lt,
+                 name="TriggerDistanceToVehicle"):
         """
         Setup trigger distance
         """
         super(InTriggerDistanceToVehicle, self).__init__(name)
         self.logger.debug("%s.__init__()" % (self.__class__.__name__))
-        self._other_actor = other_actor
+        self._reference_actor = reference_actor
         self._actor = actor
         self._distance = distance
         self._comparison_operator = comparison_operator
@@ -292,13 +413,13 @@ class InTriggerDistanceToVehicle(AtomicBehavior):
         """
         new_status = py_trees.common.Status.RUNNING
 
-        ego_location = CarlaDataProvider.get_location(self._actor)
-        other_location = CarlaDataProvider.get_location(self._other_actor)
+        location = CarlaDataProvider.get_location(self._actor)
+        reference_location = CarlaDataProvider.get_location(self._reference_actor)
 
-        if ego_location is None or other_location is None:
+        if location is None or reference_location is None:
             return new_status
 
-        if self._comparison_operator(calculate_distance(ego_location, other_location), self._distance):
+        if self._comparison_operator(calculate_distance(location, reference_location), self._distance):
             new_status = py_trees.common.Status.SUCCESS
 
         self.logger.debug("%s.update()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
@@ -306,7 +427,7 @@ class InTriggerDistanceToVehicle(AtomicBehavior):
         return new_status
 
 
-class InTriggerDistanceToLocation(AtomicBehavior):
+class InTriggerDistanceToLocation(AtomicCondition):
 
     """
     This class contains the trigger (condition) for a distance to a fixed
@@ -341,6 +462,7 @@ class InTriggerDistanceToLocation(AtomicBehavior):
         """
         Check if the actor is within trigger distance to the target location
         """
+
         new_status = py_trees.common.Status.RUNNING
 
         location = CarlaDataProvider.get_location(self._actor)
@@ -357,7 +479,7 @@ class InTriggerDistanceToLocation(AtomicBehavior):
         return new_status
 
 
-class InTriggerDistanceToNextIntersection(AtomicBehavior):
+class InTriggerDistanceToNextIntersection(AtomicCondition):
 
     """
     This class contains the trigger (condition) for a distance to the
@@ -404,7 +526,7 @@ class InTriggerDistanceToNextIntersection(AtomicBehavior):
         return new_status
 
 
-class InTriggerDistanceToLocationAlongRoute(AtomicBehavior):
+class InTriggerDistanceToLocationAlongRoute(AtomicCondition):
 
     """
     Implementation for a behavior that will check if a given actor
@@ -446,6 +568,7 @@ class InTriggerDistanceToLocationAlongRoute(AtomicBehavior):
 
             actor_distance, _ = get_distance_along_route(self._route, current_location)
 
+            # If closer than self._distance and hasn't passed the trigger point
             if (self._location_distance < actor_distance + self._distance and
                 actor_distance < self._location_distance) or \
                     self._location_distance < 1.0:
@@ -454,7 +577,7 @@ class InTriggerDistanceToLocationAlongRoute(AtomicBehavior):
         return new_status
 
 
-class InTimeToArrivalToLocation(AtomicBehavior):
+class InTimeToArrivalToLocation(AtomicCondition):
 
     """
     This class contains a check if a actor arrives within a given time
@@ -509,7 +632,7 @@ class InTimeToArrivalToLocation(AtomicBehavior):
         return new_status
 
 
-class InTimeToArrivalToVehicle(AtomicBehavior):
+class InTimeToArrivalToVehicle(AtomicCondition):
 
     """
     This class contains a check if a actor arrives within a given time
@@ -567,7 +690,7 @@ class InTimeToArrivalToVehicle(AtomicBehavior):
         return new_status
 
 
-class DriveDistance(AtomicBehavior):
+class DriveDistance(AtomicCondition):
 
     """
     This class contains an atomic behavior to drive a certain distance.
@@ -611,7 +734,7 @@ class DriveDistance(AtomicBehavior):
         return new_status
 
 
-class WaitForTrafficLightState(AtomicBehavior):
+class WaitForTrafficLightState(AtomicCondition):
 
     """
     This class contains an atomic behavior to wait for a given traffic light
@@ -651,3 +774,72 @@ class WaitForTrafficLightState(AtomicBehavior):
     def terminate(self, new_status):
         self._traffic_light = None
         super(WaitForTrafficLightState, self).terminate(new_status)
+
+
+class WaitEndIntersection(AtomicCondition):
+
+    """
+    Atomic behavior that waits until the vehicles has gone outside the junction.
+    If currently inside no intersection, it will wait until one is found
+    """
+
+    def __init__(self, actor, debug=False, name="WaitEndIntersection"):
+        super(WaitEndIntersection, self).__init__(name)
+        self.actor = actor
+        self.debug = debug
+        self.inside_junction = False
+        self.logger.debug("%s.__init__()" % (self.__class__.__name__))
+
+    def update(self):
+
+        new_status = py_trees.common.Status.RUNNING
+
+        location = CarlaDataProvider.get_location(self.actor)
+        waypoint = CarlaDataProvider.get_map().get_waypoint(location)
+
+        # Wait for the actor to enter a junction
+        if not self.inside_junction and waypoint.is_junction:
+            self.inside_junction = True
+
+        # And to leave it
+        if self.inside_junction and not waypoint.is_junction:
+            if self.debug:
+                print("--- Leaving the junction")
+            new_status = py_trees.common.Status.SUCCESS
+
+        return new_status
+
+
+class WaitForBlackboardVariable(AtomicCondition):
+
+    """
+    Atomic behavior that keeps running until the blackboard variable is set to the corresponding value.
+    Used to avoid returning FAILURE if the blackboard comparison fails.
+
+    It also initially sets the variable to a given value, if given
+    """
+
+    def __init__(self, variable_name, variable_value, var_init_value=None,
+                 debug=False, name="WaitForBlackboardVariable"):
+        super(WaitForBlackboardVariable, self).__init__(name)
+        self._debug = debug
+        self._variable_name = variable_name
+        self._variable_value = variable_value
+        self.logger.debug("%s.__init__()" % (self.__class__.__name__))
+
+        if var_init_value is not None:
+            blackboard = py_trees.blackboard.Blackboard()
+            _ = blackboard.set(variable_name, var_init_value)
+
+    def update(self):
+
+        new_status = py_trees.common.Status.RUNNING
+
+        blackv = py_trees.blackboard.Blackboard()
+        value = blackv.get(self._variable_name)
+        if value == self._variable_value:
+            if self._debug:
+                print("Blackboard variable {} set to True".format(self._variable_name))
+            new_status = py_trees.common.Status.SUCCESS
+
+        return new_status

@@ -14,15 +14,15 @@ And encounters another vehicle passing across the junction.
 import py_trees
 import carla
 
-from srunner.scenariomanager.scenarioatomics.atomic_behaviors import *
-from srunner.scenariomanager.scenarioatomics.atomic_criteria import *
-from srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import *
+from srunner.scenariomanager.carla_data_provider import CarlaActorPool
+from srunner.scenariomanager.scenarioatomics.atomic_behaviors import (ActorTransformSetter,
+                                                                      ActorDestroy,
+                                                                      SyncArrival,
+                                                                      KeepVelocity,
+                                                                      StopVehicle)
+from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, DrivenDistanceTest
+from srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import InTriggerRegion
 from srunner.scenarios.basic_scenario import BasicScenario
-
-
-NO_SIGNAL_JUNCTION_SCENARIOS = [
-    "NoSignalJunctionCrossing",
-]
 
 
 class NoSignalJunctionCrossing(BasicScenario):
@@ -34,8 +34,6 @@ class NoSignalJunctionCrossing(BasicScenario):
 
     This is a single ego vehicle scenario
     """
-
-    category = "NoSignalJunction"
 
     # ego vehicle parameters
     _ego_vehicle_max_velocity = 20
@@ -73,6 +71,7 @@ class NoSignalJunctionCrossing(BasicScenario):
                            config.other_actors[0].transform.location.z - 500),
             config.other_actors[0].transform.rotation)
         first_vehicle = CarlaActorPool.request_new_actor(config.other_actors[0].model, first_vehicle_transform)
+        first_vehicle.set_simulate_physics(enabled=False)
         self.other_actors.append(first_vehicle)
 
     def _create_behavior(self):
