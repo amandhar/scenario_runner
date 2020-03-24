@@ -14,6 +14,7 @@ ERDOS_BENCHMARK_SCENARIOS = [
     "ERDOSManyPedestrians",
     "ERDOSBenchmarkThree",
     "ERDOSCarFromAlley",
+    "ERDOSTrackPedestrians",
 ]
 
 LEFT_PEDESTRIAN_LOCATIONS = [
@@ -648,7 +649,6 @@ class ERDOSCarFromAlley(BasicScenario):
         alley_tesla = CarlaActorPool.request_new_actor('vehicle.tesla.model3',
                                                        alley_transform)
         self.other_actors.append(alley_tesla)
-
         # Set all the traffic lights in the world to green.
         for actor in self._world.get_actors():
             if actor.type_id == "traffic.traffic_light":
@@ -698,6 +698,80 @@ class ERDOSCarFromAlley(BasicScenario):
         collision_criterion = CollisionTest(self.ego_vehicles[0])
         criteria.append(collision_criterion)
         return criteria
+
+    def __del__(self):
+        """
+        Remove all actors upon deletion
+        """
+        self.remove_all_actors()
+
+
+class ERDOSTrackPedestrians(ERDOSManyPedestrians):
+    """
+    This class sets up the scenario with 5-10 actors in the field of
+    vision. This simple scenario is used to evaluate pedestrian
+    tracking.
+
+    This is a single ego-vehicle scenario.
+    """
+    def __init__(self,
+                 world,
+                 ego_vehicles,
+                 config,
+                 randomize=False,
+                 debug_mode=False,
+                 criteria_enable=True,
+                 timeout=600000000000):
+        """
+        Sets up the required class variables and calls ERDOSTrackPedestrians to
+        set up most of the scenario.
+        """
+        super(ERDOSTrackPedestrians,
+              self).__init__(world,
+                             ego_vehicles,
+                             config,
+                             debug_mode=debug_mode,
+                             criteria_enable=criteria_enable)
+        self._num_walkers = 12
+
+    def _initialize_actors(self, config):
+        """
+        Initializes the other vehicles in the scenario.
+        """
+        # Initialize all the pedestrians in the scene.
+        if self._num_walkers > len(LEFT_PEDESTRIAN_LOCATIONS) + len(
+                RIGHT_PEDESTRIAN_LOCATIONS):
+            raise ValueError(
+                "The number of walkers requested ({}) is greater than the "
+                "number of unique pedestrian locations ({}).".format(
+                    self._num_walkers,
+                    len(LEFT_PEDESTRIAN_LOCATIONS) +
+                    len(RIGHT_PEDESTRIAN_LOCATIONS)))
+
+        left_locations, right_locations = [], []
+        # To ensure that there is determinism across runs, and still be able
+        # to use random.sample
+        random.seed(0)
+        # Only spawn pedestrians closest to the car.
+        sorted_left_locations = sorted(LEFT_PEDESTRIAN_LOCATIONS, key=lambda loc: -loc.x)
+        sorted_right_locations = sorted(RIGHT_PEDESTRIAN_LOCATIONS, key=lambda loc: -loc.x)
+        left_locations = sorted_left_locations[:self._num_walkers//2]
+        right_locations = sorted_right_locations[:self._num_walkers//2]
+
+        self.other_actors.extend(
+            self.spawn_pedestrians(
+                right_locations,
+                random.sample(RIGHT_PEDESTRIAN_LOCATIONS, len(right_locations))))
+        self.other_actors.extend(
+            self.spawn_pedestrians(
+                left_locations,
+                random.sample(LEFT_PEDESTRIAN_LOCATIONS, len(left_locations))))
+
+        # Set all the traffic lights in the world to green.
+        for actor in self._world.get_actors():
+            if actor.type_id == "traffic.traffic_light":
+                actor.set_state(carla.TrafficLightState.Green)
+                actor.freeze(True)
 
     def __del__(self):
         """
