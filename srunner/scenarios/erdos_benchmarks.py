@@ -148,7 +148,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         # Pedestrian Config
         self._pedestrian_distance = 132
         self._pedestrian_translation = 6
-        self._pedestrian_velocity = 6
+        self._pedestrian_velocity = 3.5
         self._pedestrian_trigger_distance = 50
 
         # Miscellaneous Config
@@ -753,15 +753,18 @@ class ERDOSTrackPedestrians(ERDOSManyPedestrians):
         # to use random.sample
         random.seed(0)
         # Only spawn pedestrians closest to the car.
-        sorted_left_locations = sorted(LEFT_PEDESTRIAN_LOCATIONS, key=lambda loc: -loc.x)
-        sorted_right_locations = sorted(RIGHT_PEDESTRIAN_LOCATIONS, key=lambda loc: -loc.x)
-        left_locations = sorted_left_locations[:self._num_walkers//2]
-        right_locations = sorted_right_locations[:self._num_walkers//2]
+        sorted_left_locations = sorted(LEFT_PEDESTRIAN_LOCATIONS,
+                                       key=lambda loc: -loc.x)
+        sorted_right_locations = sorted(RIGHT_PEDESTRIAN_LOCATIONS,
+                                        key=lambda loc: -loc.x)
+        left_locations = sorted_left_locations[:self._num_walkers // 2]
+        right_locations = sorted_right_locations[:self._num_walkers // 2]
 
         self.other_actors.extend(
             self.spawn_pedestrians(
                 right_locations,
-                random.sample(RIGHT_PEDESTRIAN_LOCATIONS, len(right_locations))))
+                random.sample(RIGHT_PEDESTRIAN_LOCATIONS,
+                              len(right_locations))))
         self.other_actors.extend(
             self.spawn_pedestrians(
                 left_locations,
