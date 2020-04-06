@@ -152,7 +152,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         self._pedestrian_trigger_distance = 50
 
         # Miscellaneous Config
-        self._crossing_distance = 10
+        self._crossing_distance = 6.5
         self._driving_distance = 370
 
         # Call the base class to set up the scenario.
