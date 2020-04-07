@@ -349,7 +349,6 @@ class ERDOSManyPedestrians(BasicScenario):
 
         # Number of pedestrians in the scene.
         self._num_walkers = 91
-
         # Pedestrian Config.
         self._pedestrian_distance = 132
         self._pedestrian_trigger_distance = 50
@@ -409,7 +408,6 @@ class ERDOSManyPedestrians(BasicScenario):
         """
         Initializes the other vehicles in the scenario.
         """
-
         # Initialize all the pedestrians in the scene.
         if self._num_walkers > len(LEFT_PEDESTRIAN_LOCATIONS) + len(
                 RIGHT_PEDESTRIAN_LOCATIONS):
@@ -755,7 +753,7 @@ class ERDOSCarFromAlley(BasicScenario):
         self.remove_all_actors()
 
 
-class ERDOSTrackPedestrians(ERDOSManyPedestrians):
+class ERDOSTrackPedestrians(BasicScenario):
     """
     This class sets up the scenario with 5-10 actors in the field of
     vision. This simple scenario is used to evaluate pedestrian
@@ -772,21 +770,74 @@ class ERDOSTrackPedestrians(ERDOSManyPedestrians):
                  criteria_enable=True,
                  timeout=600000000000):
         """
-        Sets up the required class variables and calls ERDOSTrackPedestrians to
+        Sets up the required class variables and calls BasicScenario to
         set up most of the scenario.
         """
         self.debug_mode = debug_mode
+        self._map = CarlaDataProvider.get_map()
+        self._world = CarlaDataProvider.get_world()
+        self._reference_waypoint = self._map.get_waypoint(
+        config.trigger_points[0].location)
+        self.timeout = timeout
+
+        # Number of pedestrians in the scene
+        self._num_walkers = 12
+
+        # Pedestrian Config.
+        self._pedestrian_distance = 132
+        self._pedestrian_trigger_distance = 50
+        self._pedestrian_translation = 6
+        self._pedestrian_velocity = 6
+
+        self._driving_distance = 370
+         # Call the base class to set up the scenario.
         super(ERDOSTrackPedestrians,
-              self).__init__(world,
+              self).__init__("ERDOSTrackPedestrians",
                              ego_vehicles,
                              config,
-                             debug_mode=debug_mode,
+                             world,
+                             debug_mode,
                              criteria_enable=criteria_enable)
-        self._num_walkers = 12
+
+    def spawn_pedestrians(self, sampled_locations, goto_locations):
+        """
+        Spawns the pedestrians at the sampled locations and makes them
+        complete a trajectory to the corresponding location in the goto
+        locations.
+
+        Returns the actors spawned.
+        """
+        actors = []
+        for location, destination in zip(sampled_locations, goto_locations):
+            # Spawn the actor.
+            walker_bp = random.choice(
+                self._world.get_blueprint_library().filter("walker.*"))
+            try:
+                walker_actor = self._world.spawn_actor(
+                    walker_bp, carla.Transform(location=location))
+            except RuntimeError:
+                print("Could not spawn the actor because of collision.")
+                continue
+            actors.append(walker_actor)
+
+            # Spawn the controller.
+            walker_controller_bp = self._world.get_blueprint_library().find(
+                'controller.ai.walker')
+            walker_controller_actor = self._world.spawn_actor(
+                walker_controller_bp, carla.Transform(), walker_actor)
+
+            self._world.wait_for_tick()
+
+            # Choose a location and make the pedestrian move there.
+            walker_controller_actor.start()
+            walker_controller_actor.go_to_location(destination)
+            walker_controller_actor.set_max_speed(1.4)
+
+        return actors
 
     def _initialize_actors(self, config):
         """
-        Initializes the other vehicles in the scenario.
+        Initializes the pedestrians in the scenario.
         """
         # Initialize all the pedestrians in the scene.
         if self._num_walkers > len(LEFT_PEDESTRIAN_LOCATIONS) + len(
@@ -836,6 +887,32 @@ class ERDOSTrackPedestrians(ERDOSManyPedestrians):
                                             terminate_on_failure=True)
             criteria.append(timely_arrival)
         return criteria
+
+    def _create_behavior(self):
+        """
+        The scenario involves setting up a set of pedestrians walking
+        on the sidewalk. The ego vehicle drives forward on the street.
+        """
+        # Define the endcondition.
+        endcondition = py_trees.composites.Parallel(
+            "Waiting for end position",
+            policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL)
+        endcondition.add_child(
+            StandStill(self.ego_vehicles[0], name="StandStill"))
+
+        # Define the behavior tree.
+        sequence = py_trees.composites.Sequence(
+            "TrackPedestrians Behavior Tree")
+        sequence.add_child(
+            InTriggerDistanceToLocation(
+                self.ego_vehicles[0],
+                self._reference_waypoint.transform.location -
+                carla.Location(x=self._driving_distance), 10))
+        sequence.add_child(endcondition)
+        for actor in self.other_actors:
+            sequence.add_child(ActorDestroy(actor))
+
+        return sequence
 
     def __del__(self):
         """
