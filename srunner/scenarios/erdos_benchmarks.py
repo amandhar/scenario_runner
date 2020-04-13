@@ -15,6 +15,7 @@ ERDOS_BENCHMARK_SCENARIOS = [
     "ERDOSBenchmarkThree",
     "ERDOSCarFromAlley",
     "ERDOSTrackPedestrians",
+    "ERDOSPedestrianCrossing",
 ]
 
 LEFT_PEDESTRIAN_LOCATIONS = [
@@ -775,6 +776,145 @@ class ERDOSTrackPedestrians(ERDOSManyPedestrians):
             if actor.type_id == "traffic.traffic_light":
                 actor.set_state(carla.TrafficLightState.Green)
                 actor.freeze(True)
+
+    def __del__(self):
+        """
+        Remove all actors upon deletion
+        """
+        self.remove_all_actors()
+
+
+class ERDOSPedestrianCrossing(BasicScenario):
+    """
+    This class sets up the scenario where the ego vehicle needs to drive
+    on a road, and a pedestrian crosses unexpectedly from the other side of
+    the road.
+    """
+    def __init__(self,
+                 world,
+                 ego_vehicles,
+                 config,
+                 randomize=False,
+                 debug_mode=False,
+                 criteria_enable=True,
+                 timeout=600000000000):
+        """
+        Sets up the required class variables and calls BasicScenario to
+        finish setting up the scenario.
+        """
+        self._map = CarlaDataProvider.get_map()
+        self._world = CarlaDataProvider.get_world()
+        self._reference_waypoint = self._map.get_waypoint(
+            config.trigger_points[0].location)
+        self.timeout = timeout
+
+        # Pedestrian Config
+        self._pedestrian_distance = 42
+        self._pedestrian_translation = 5
+        self._pedestrian_velocity = 3.5
+        # Distance at which the pedestrian starts crossing.
+        self._pedestrian_trigger_distance = 30
+
+        # Miscellaneous Config
+        self._crossing_distance = 6.5
+        self._driving_distance = 270
+
+        # Call the base class to set up the scenario.
+        super(ERDOSPedestrianCrossing,
+              self).__init__("ERDOSPedestrianCrossing",
+                             ego_vehicles,
+                             config,
+                             world,
+                             debug_mode,
+                             criteria_enable=criteria_enable)
+
+    @staticmethod
+    def get_waypoint_in_distance(waypoint, distance):
+        """
+        Obtain a waypoint in a given distance from the actor's location.
+        Do not stop the search on the first intersection.
+        """
+        traveled_distance = 0
+        while traveled_distance < distance:
+            waypoint_new = waypoint.next(1.0)[0]
+            traveled_distance += waypoint_new.transform.location.distance(
+                waypoint.transform.location)
+            waypoint = waypoint_new
+
+        return waypoint, traveled_distance
+
+    def _initialize_actors(self, config):
+        """
+        Initializes the other vehicles in the scenario.
+        """
+        # Initialize the pedestrian.
+        pedestrian_wp, _ = ERDOSPedestrianCrossing.get_waypoint_in_distance(
+            self._reference_waypoint, self._pedestrian_distance)
+        self._pedestrian_transform = carla.Transform(
+            carla.Location(
+                pedestrian_wp.transform.location.x,
+                pedestrian_wp.transform.location.y +
+                self._pedestrian_translation,
+                pedestrian_wp.transform.location.z + 15),
+            carla.Rotation(pedestrian_wp.transform.rotation.pitch,
+                           pedestrian_wp.transform.rotation.yaw + 90,
+                           pedestrian_wp.transform.rotation.roll))
+        pedestrian = CarlaActorPool.request_new_actor(
+            'walker.pedestrian.0007',
+            self._pedestrian_transform,
+            rolename='pedestrian')
+        self.other_actors.append(pedestrian)
+
+        # Set all the traffic lights in the world to green.
+        for actor in self._world.get_actors():
+            if actor.type_id == "traffic.traffic_light":
+                actor.set_state(carla.TrafficLightState.Green)
+                actor.freeze(True)
+
+    def _create_behavior(self):
+        # The pedestrian needs to walk to the other side of the road.
+        pedestrian_crossing = py_trees.composites.Parallel(
+            "Obstacle clearing road",
+            policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE)
+        pedestrian_crossing.add_child(
+            DriveDistance(self.other_actors[-1], self._crossing_distance))
+        pedestrian_crossing.add_child(
+            KeepVelocity(self.other_actors[-1], self._pedestrian_velocity))
+
+        # Define the endcondition.
+        endcondition = py_trees.composites.Parallel(
+            "Waiting for end position",
+            policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL)
+        endcondition.add_child(
+            StandStill(self.ego_vehicles[0], name="StandStill"))
+
+        # Define the behavior tree.
+        sequence = py_trees.composites.Sequence(
+            "PedestrianCrossing Behavior Tree")
+        sequence.add_child(
+            InTriggerDistanceToVehicle(self.other_actors[-1],
+                                       self.ego_vehicles[0],
+                                       self._pedestrian_trigger_distance))
+        sequence.add_child(pedestrian_crossing)
+        sequence.add_child(
+            InTriggerDistanceToLocation(
+                self.ego_vehicles[0],
+                self._reference_waypoint.transform.location -
+                carla.Location(x=self._driving_distance), 100))
+        sequence.add_child(endcondition)
+        sequence.add_child(ActorDestroy(self.other_actors[0]))
+
+        return sequence
+
+    def _create_test_criteria(self):
+        """
+        A list of all test criteria will be created that is later used
+        in parallel behavior tree.
+        """
+        criteria = []
+        collision_criterion = CollisionTest(self.ego_vehicles[0])
+        criteria.append(collision_criterion)
+        return criteria
 
     def __del__(self):
         """
