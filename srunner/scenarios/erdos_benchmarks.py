@@ -810,7 +810,7 @@ class ERDOSPedestrianCrossing(BasicScenario):
 
         # Pedestrian Config
         self._pedestrian_distance = 42
-        self._pedestrian_translation = 5
+        self._pedestrian_left_translation = 5
         self._pedestrian_velocity = 3.5
         # Distance at which the pedestrian starts crossing.
         self._pedestrian_trigger_distance = 30
@@ -848,22 +848,23 @@ class ERDOSPedestrianCrossing(BasicScenario):
         Initializes the other vehicles in the scenario.
         """
         # Initialize the pedestrian.
-        pedestrian_wp, _ = ERDOSPedestrianCrossing.get_waypoint_in_distance(
-            self._reference_waypoint, self._pedestrian_distance)
-        self._pedestrian_transform = carla.Transform(
+        pedestrian_left_wp, _ = \
+            ERDOSPedestrianCrossing.get_waypoint_in_distance(
+                self._reference_waypoint, self._pedestrian_distance)
+        self._pedestrian_left_transform = carla.Transform(
             carla.Location(
-                pedestrian_wp.transform.location.x,
-                pedestrian_wp.transform.location.y +
-                self._pedestrian_translation,
-                pedestrian_wp.transform.location.z + 15),
-            carla.Rotation(pedestrian_wp.transform.rotation.pitch,
-                           pedestrian_wp.transform.rotation.yaw + 90,
-                           pedestrian_wp.transform.rotation.roll))
-        pedestrian = CarlaActorPool.request_new_actor(
+                pedestrian_left_wp.transform.location.x,
+                pedestrian_left_wp.transform.location.y +
+                self._pedestrian_left_translation,
+                pedestrian_left_wp.transform.location.z + 15),
+            carla.Rotation(pedestrian_left_wp.transform.rotation.pitch,
+                           pedestrian_left_wp.transform.rotation.yaw + 90,
+                           pedestrian_left_wp.transform.rotation.roll))
+        pedestrian_left = CarlaActorPool.request_new_actor(
             'walker.pedestrian.0007',
-            self._pedestrian_transform,
+            self._pedestrian_left_transform,
             rolename='pedestrian')
-        self.other_actors.append(pedestrian)
+        self.other_actors.append(pedestrian_left)
 
         # Set all the traffic lights in the world to green.
         for actor in self._world.get_actors():
@@ -877,9 +878,9 @@ class ERDOSPedestrianCrossing(BasicScenario):
             "Obstacle clearing road",
             policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE)
         pedestrian_crossing.add_child(
-            DriveDistance(self.other_actors[-1], self._crossing_distance))
+            DriveDistance(self.other_actors[0], self._crossing_distance))
         pedestrian_crossing.add_child(
-            KeepVelocity(self.other_actors[-1], self._pedestrian_velocity))
+            KeepVelocity(self.other_actors[0], self._pedestrian_velocity))
 
         # Define the endcondition.
         endcondition = py_trees.composites.Parallel(
@@ -892,7 +893,7 @@ class ERDOSPedestrianCrossing(BasicScenario):
         sequence = py_trees.composites.Sequence(
             "PedestrianCrossing Behavior Tree")
         sequence.add_child(
-            InTriggerDistanceToVehicle(self.other_actors[-1],
+            InTriggerDistanceToVehicle(self.other_actors[0],
                                        self.ego_vehicles[0],
                                        self._pedestrian_trigger_distance))
         sequence.add_child(pedestrian_crossing)
@@ -921,3 +922,82 @@ class ERDOSPedestrianCrossing(BasicScenario):
         Remove all actors upon deletion
         """
         self.remove_all_actors()
+
+
+class ERDOSPedestrianCrossingPaths(ERDOSPedestrianCrossing):
+    def __init__(self,
+                 world,
+                 ego_vehicles,
+                 config,
+                 randomize=False,
+                 debug_mode=False,
+                 criteria_enable=True,
+                 timeout=600000000000):
+        self._pedestrian_right_translation = -1.5
+        super(ERDOSPedestrianCrossingPaths,
+              self).__init__(world, ego_vehicles, config, randomize,
+                             debug_mode, criteria_enable, timeout)
+
+    def _initialize_actors(self, config):
+        super(ERDOSPedestrianCrossingPaths, self)._initialize_actors(config)
+        pedestrian_right_wp, _ = \
+            ERDOSPedestrianCrossing.get_waypoint_in_distance(
+                self._reference_waypoint, self._pedestrian_distance + 1)
+        self._pedestrian_right_transform = carla.Transform(
+            carla.Location(
+                pedestrian_right_wp.transform.location.x,
+                pedestrian_right_wp.transform.location.y +
+                self._pedestrian_right_translation,
+                pedestrian_right_wp.transform.location.z + 15),
+            carla.Rotation(pedestrian_right_wp.transform.rotation.pitch,
+                           pedestrian_right_wp.transform.rotation.yaw - 90,
+                           pedestrian_right_wp.transform.rotation.roll))
+        pedestrian_right = CarlaActorPool.request_new_actor(
+            'walker.pedestrian.0005',
+            self._pedestrian_right_transform,
+            rolename='pedestrian')
+        self.other_actors.append(pedestrian_right)
+
+    def _create_behavior(self):
+        # The pedestrian needs to walk to the other side of the road.
+        pedestrian_crossing = py_trees.composites.Parallel(
+            "Obstacle clearing road",
+            policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE)
+        pedestrian_crossing.add_child(
+            DriveDistance(self.other_actors[0], self._crossing_distance))
+        pedestrian_crossing.add_child(
+            KeepVelocity(self.other_actors[0], self._pedestrian_velocity))
+        pedestrian_crossing.add_child(
+            DriveDistance(self.other_actors[1], self._crossing_distance))
+        pedestrian_crossing.add_child(
+            KeepVelocity(self.other_actors[1], self._pedestrian_velocity))
+
+        # Define the endcondition.
+        endcondition = py_trees.composites.Parallel(
+            "Waiting for end position",
+            policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL)
+        endcondition.add_child(
+            StandStill(self.ego_vehicles[0], name="StandStill"))
+
+        # Define the behavior tree.
+        sequence = py_trees.composites.Sequence(
+            "PedestrianCrossingPaths Behavior Tree")
+        sequence.add_child(
+            InTriggerDistanceToVehicle(self.other_actors[0],
+                                       self.ego_vehicles[0],
+                                       self._pedestrian_trigger_distance))
+        sequence.add_child(
+            InTriggerDistanceToVehicle(self.other_actors[1],
+                                       self.ego_vehicles[0],
+                                       self._pedestrian_trigger_distance))
+        sequence.add_child(pedestrian_crossing)
+        sequence.add_child(
+            InTriggerDistanceToLocation(
+                self.ego_vehicles[0],
+                self._reference_waypoint.transform.location -
+                carla.Location(x=self._driving_distance), 100))
+        sequence.add_child(endcondition)
+        sequence.add_child(ActorDestroy(self.other_actors[0]))
+        sequence.add_child(ActorDestroy(self.other_actors[1]))
+
+        return sequence
