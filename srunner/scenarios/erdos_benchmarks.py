@@ -2,21 +2,16 @@ import py_trees
 import random
 import carla
 
-from srunner.scenariomanager.scenarioatomics.atomic_behaviors import *
-from srunner.scenariomanager.scenarioatomics.atomic_criteria import *
-from srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import *
-from srunner.scenariomanager.timer import TimeOut
+from srunner.scenariomanager.carla_data_provider import CarlaActorPool, \
+    CarlaDataProvider
+from srunner.scenariomanager.scenarioatomics.atomic_behaviors import \
+    ActorDestroy, ActorTransformSetter, KeepVelocity
+from srunner.scenariomanager.scenarioatomics.atomic_criteria import \
+    CollisionTest, MaxSimTimeTest
+from srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import \
+    DriveDistance, InTriggerDistanceToLocation, InTriggerDistanceToVehicle, \
+    InTriggerRegion, StandStill
 from srunner.scenarios.basic_scenario import BasicScenario
-from srunner.tools.scenario_helper import *
-
-ERDOS_BENCHMARK_SCENARIOS = [
-    "ERDOSPedestrianBehindCar",
-    "ERDOSManyPedestrians",
-    "ERDOSBenchmarkThree",
-    "ERDOSCarFromAlley",
-    "ERDOSTrackPedestrians",
-    "ERDOSPedestrianCrossing",
-]
 
 LEFT_PEDESTRIAN_LOCATIONS = [
     carla.Location(x=78.412392, y=323.170654, z=0.178421),
@@ -282,7 +277,8 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         in parallel behavior tree.
         """
         criteria = []
-        collision_criterion = CollisionTest(self.ego_vehicles[0])
+        collision_criterion = CollisionTest(self.ego_vehicles[0],
+                                            terminate_on_failure=True)
         criteria.append(collision_criterion)
         return criteria
 
@@ -458,7 +454,8 @@ class ERDOSManyPedestrians(BasicScenario):
         in parallel behavior tree.
         """
         criteria = []
-        collision_criterion = CollisionTest(self.ego_vehicles[0])
+        collision_criterion = CollisionTest(self.ego_vehicles[0],
+                                            terminate_on_failure=True)
         criteria.append(collision_criterion)
         return criteria
 
@@ -599,7 +596,8 @@ class ERDOSBenchmarkThree(BasicScenario):
         in parallel behavior tree.
         """
         criteria = []
-        collision_criterion = CollisionTest(self.ego_vehicles[0])
+        collision_criterion = CollisionTest(self.ego_vehicles[0],
+                                            terminate_on_failure=True)
         criteria.append(collision_criterion)
         return criteria
 
@@ -696,7 +694,8 @@ class ERDOSCarFromAlley(BasicScenario):
         in parallel behavior tree.
         """
         criteria = []
-        collision_criterion = CollisionTest(self.ego_vehicles[0])
+        collision_criterion = CollisionTest(self.ego_vehicles[0],
+                                            terminate_on_failure=True)
         criteria.append(collision_criterion)
         return criteria
 
@@ -816,8 +815,8 @@ class ERDOSPedestrianCrossing(BasicScenario):
         self._pedestrian_trigger_distance = 30
 
         # Miscellaneous Config
-        self._crossing_distance = 6.5
-        self._driving_distance = 270
+        self._crossing_distance = 5.5
+        self._driving_distance = 70
 
         # Call the base class to set up the scenario.
         super(ERDOSPedestrianCrossing,
@@ -886,8 +885,10 @@ class ERDOSPedestrianCrossing(BasicScenario):
         endcondition = py_trees.composites.Parallel(
             "Waiting for end position",
             policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL)
-        endcondition.add_child(
-            StandStill(self.ego_vehicles[0], name="StandStill"))
+        reached_goal = InTriggerDistanceToLocation(
+            self.ego_vehicles[0], self._reference_waypoint.transform.location -
+            carla.Location(x=self._driving_distance), 5)
+        endcondition.add_child(reached_goal)
 
         # Define the behavior tree.
         sequence = py_trees.composites.Sequence(
@@ -897,11 +898,6 @@ class ERDOSPedestrianCrossing(BasicScenario):
                                        self.ego_vehicles[0],
                                        self._pedestrian_trigger_distance))
         sequence.add_child(pedestrian_crossing)
-        sequence.add_child(
-            InTriggerDistanceToLocation(
-                self.ego_vehicles[0],
-                self._reference_waypoint.transform.location -
-                carla.Location(x=self._driving_distance), 100))
         sequence.add_child(endcondition)
         sequence.add_child(ActorDestroy(self.other_actors[0]))
 
@@ -913,8 +909,15 @@ class ERDOSPedestrianCrossing(BasicScenario):
         in parallel behavior tree.
         """
         criteria = []
-        collision_criterion = CollisionTest(self.ego_vehicles[0])
+        collision_criterion = CollisionTest(self.ego_vehicles[0],
+                                            terminate_on_failure=True)
         criteria.append(collision_criterion)
+
+        timely_arrival = MaxSimTimeTest(self.ego_vehicles[0],
+                                        50,
+                                        terminate_on_failure=True)
+        criteria.append(timely_arrival)
+
         return criteria
 
     def __del__(self):
@@ -976,8 +979,10 @@ class ERDOSPedestrianCrossingPaths(ERDOSPedestrianCrossing):
         endcondition = py_trees.composites.Parallel(
             "Waiting for end position",
             policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL)
-        endcondition.add_child(
-            StandStill(self.ego_vehicles[0], name="StandStill"))
+        reached_goal = InTriggerDistanceToLocation(
+            self.ego_vehicles[0], self._reference_waypoint.transform.location -
+            carla.Location(x=self._driving_distance), 5)
+        endcondition.add_child(reached_goal)
 
         # Define the behavior tree.
         sequence = py_trees.composites.Sequence(
@@ -991,11 +996,6 @@ class ERDOSPedestrianCrossingPaths(ERDOSPedestrianCrossing):
                                        self.ego_vehicles[0],
                                        self._pedestrian_trigger_distance))
         sequence.add_child(pedestrian_crossing)
-        sequence.add_child(
-            InTriggerDistanceToLocation(
-                self.ego_vehicles[0],
-                self._reference_waypoint.transform.location -
-                carla.Location(x=self._driving_distance), 100))
         sequence.add_child(endcondition)
         sequence.add_child(ActorDestroy(self.other_actors[0]))
         sequence.add_child(ActorDestroy(self.other_actors[1]))

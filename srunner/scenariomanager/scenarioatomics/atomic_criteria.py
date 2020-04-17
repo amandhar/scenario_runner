@@ -80,6 +80,47 @@ class Criterion(py_trees.behaviour.Behaviour):
         self.logger.debug("%s.terminate()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
 
 
+class MaxSimTimeTest(Criterion):
+    def __init__(self,
+                 actor,
+                 max_sim_time,
+                 terminate_on_failure=False,
+                 name="CheckMaxSimTIme"):
+        super(MaxSimTimeTest,
+              self).__init__(name,
+                             actor,
+                             max_sim_time,
+                             terminate_on_failure=terminate_on_failure)
+        self._initial_timestamp = None
+
+    def update(self):
+        new_status = py_trees.common.Status.RUNNING
+
+        if self.actor is None:
+            return new_status
+
+        world = CarlaDataProvider.get_world()
+        cur_timestamp = world.get_snapshot().timestamp.elapsed_seconds
+
+        if self._initial_timestamp is None:
+            velocity = CarlaDataProvider.get_velocity(self.actor)
+            if velocity > 0.01:
+                self._initial_timestamp = cur_timestamp
+            return new_status
+
+        if (cur_timestamp - self._initial_timestamp >
+                self.expected_value_success):
+            self.test_status = "FAILURE"
+
+        if self._terminate_on_failure and self.test_status == "FAILURE":
+            new_status = py_trees.common.Status.FAILURE
+
+        self.logger.debug("%s.update()[%s->%s]" %
+                          (self.__class__.__name__, self.status, new_status))
+
+        return new_status
+
+
 class MaxVelocityTest(Criterion):
 
     """
