@@ -10,7 +10,7 @@
         <weather cloudyness="0" precipitation="0" precipitation_deposits="0" wind_intensity="0" sun_azimuth="0" sun_altitude="75" />
     </scenario>
 
-    <scenario name="ERDOSBenchmarks_3" type="ERDOSBenchmarkThree" town="Town01">
+    <scenario name="ERDOSCarRunningLight" type="ERDOSCarRunningLight" town="Town01">
         <ego_vehicle x="11.91" y="330.75" z="0.5" model="vehicle.lincoln.mkz2017" />
         <weather cloudyness="0" precipitation="0" precipitation_deposits="0" wind_intensity="0" sun_azimuth="0" sun_altitude="75" />
     </scenario>
