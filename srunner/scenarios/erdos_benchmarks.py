@@ -139,18 +139,18 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         self.timeout = timeout
 
         # Coca Cola Van Config
-        self._coca_cola_van_distance = 125
+        self._coca_cola_van_distance = 165
         self._coca_cola_van_translation = 4
 
         # Pedestrian Config
-        self._pedestrian_distance = 132
+        self._pedestrian_distance = 172
         self._pedestrian_translation = 6
         self._pedestrian_velocity = 3.5
         self._pedestrian_trigger_distance = 50
 
         # Miscellaneous Config
         self._crossing_distance = 6.5
-        self._driving_distance = 200
+        self._driving_distance = 240
 
         # Call the base class to set up the scenario.
         super(ERDOSPedestrianBehindCar,
