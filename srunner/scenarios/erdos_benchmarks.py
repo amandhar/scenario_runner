@@ -126,7 +126,15 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                  randomize=False,
                  debug_mode=False,
                  criteria_enable=True,
-                 timeout=600000000000):
+                 timeout=600000000000,
+                 coca_cola_van_distance=215,
+                 coca_cola_van_translation=4,
+                 pedestrian_distance=222,
+                 pedestrian_translation=6,
+                 pedestrian_velocity=3.5,
+                 pedestrian_trigger_distance=50,
+                 pedestrian_yaw_offset=90,
+                 crossing_distance=6.5):
         """
         Sets up the required class variables and calls BasicScenario to
         finish setting up the scenario.
@@ -139,17 +147,18 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         self.timeout = timeout
 
         # Coca Cola Van Config
-        self._coca_cola_van_distance = 215
-        self._coca_cola_van_translation = 4
+        self._coca_cola_van_distance = coca_cola_van_distance
+        self._coca_cola_van_translation = coca_cola_van_translation
 
         # Pedestrian Config
-        self._pedestrian_distance = 222
-        self._pedestrian_translation = 6
-        self._pedestrian_velocity = 3.5
-        self._pedestrian_trigger_distance = 50
+        self._pedestrian_distance = pedestrian_distance
+        self._pedestrian_translation = pedestrian_translation
+        self._pedestrian_velocity = pedestrian_velocity
+        self._pedestrian_trigger_distance = pedestrian_trigger_distance
+        self._pedestrian_yaw_offset = pedestrian_yaw_offset
 
         # Miscellaneous Config
-        self._crossing_distance = 6.5
+        self._crossing_distance = crossing_distance
         self._driving_distance = 290
 
         # Call the base class to set up the scenario.
@@ -188,17 +197,12 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                 coca_cola_van_wp.transform.location.x,
                 coca_cola_van_wp.transform.location.y +
                 self._coca_cola_van_translation,
-                coca_cola_van_wp.transform.location.z + 10),
+                coca_cola_van_wp.transform.location.z + 1),
             carla.Rotation(coca_cola_van_wp.transform.rotation.pitch,
                            coca_cola_van_wp.transform.rotation.yaw + 180,
                            coca_cola_van_wp.transform.rotation.roll))
-        coca_cola_van_transform = carla.Transform(
-            carla.Location(self._coca_cola_van_transform.location.x,
-                           self._coca_cola_van_transform.location.y,
-                           self._coca_cola_van_transform.location.z - 500),
-            self._coca_cola_van_transform.rotation)
         coca_cola_van = CarlaActorPool.request_new_actor(
-            'vehicle.carlamotors.carlacola', coca_cola_van_transform)
+            'vehicle.carlamotors.carlacola', self._coca_cola_van_transform)
         self.other_actors.append(coca_cola_van)
 
         # Initialize the pedestrian.
@@ -209,10 +213,12 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                 pedestrian_wp.transform.location.x,
                 pedestrian_wp.transform.location.y +
                 self._pedestrian_translation,
-                pedestrian_wp.transform.location.z + 15),
-            carla.Rotation(pedestrian_wp.transform.rotation.pitch,
-                           pedestrian_wp.transform.rotation.yaw + 90,
-                           pedestrian_wp.transform.rotation.roll))
+                pedestrian_wp.transform.location.z + 5),
+            carla.Rotation(
+                pedestrian_wp.transform.rotation.pitch,
+                pedestrian_wp.transform.rotation.yaw +
+                self._pedestrian_yaw_offset,
+                pedestrian_wp.transform.rotation.roll))
         pedestrian = CarlaActorPool.request_new_actor(
             'walker.pedestrian.0007',
             self._pedestrian_transform,
@@ -292,6 +298,21 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         Remove all actors upon deletion
         """
         self.remove_all_actors()
+
+
+class ERDOSPedestrianBehindParkedCar(ERDOSPedestrianBehindCar):
+    def __init__(self,
+                 world,
+                 ego_vehicles,
+                 config,
+                 randomize=False,
+                 debug_mode=False,
+                 criteria_enable=True,
+                 timeout=600000000000):
+        super(ERDOSPedestrianBehindParkedCar,
+              self).__init__(world, ego_vehicles, config, randomize,
+                             debug_mode, criteria_enable, timeout, 208, -3,
+                             215, -2.5, 2.5, 25, -90, 3.0)
 
 
 class ERDOSManyPedestrians(BasicScenario):

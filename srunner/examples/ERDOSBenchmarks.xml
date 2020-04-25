@@ -5,6 +5,11 @@
         <weather cloudyness="0" precipitation="0" precipitation_deposits="0" wind_intensity="0" sun_azimuth="0" sun_altitude="75" />
     </scenario>
 
+    <scenario name="ERDOSPedestrianBehindParkedCar" type="ERDOSPedestrianBehindParkedCar" town="Town01">
+        <ego_vehicle x="387.73" y="326.37" z="0.5" yaw="180" model="vehicle.lincoln.mkz2017" />
+        <weather cloudyness="0" precipitation="0" precipitation_deposits="0" wind_intensity="0" sun_azimuth="0" sun_altitude="75" />
+    </scenario>
+
     <scenario name="ERDOSManyPedestrians" type="ERDOSManyPedestrians" town="Town01">
         <ego_vehicle x="387.73" y="326.37" z="0.5" yaw="180" model="vehicle.lincoln.mkz2017" />
         <weather cloudyness="0" precipitation="0" precipitation_deposits="0" wind_intensity="0" sun_azimuth="0" sun_altitude="75" />
