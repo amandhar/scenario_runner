@@ -5,7 +5,7 @@ import carla
 from srunner.scenariomanager.carla_data_provider import CarlaActorPool, \
     CarlaDataProvider
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import \
-    ActorDestroy, ActorTransformSetter, KeepVelocity
+    ActorDestroy, ActorTransformSetter, ActorRotationSetter, KeepVelocity
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import \
     CollisionTest, MaxSimTimeTest
 from srunner.scenariomanager.scenarioatomics.atomic_trigger_conditions import \
@@ -119,6 +119,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
 
     This is a single ego vehicle scenario
     """
+
     def __init__(self,
                  world,
                  ego_vehicles,
@@ -251,6 +252,9 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         pedestrian_crossing.add_child(
             KeepVelocity(self.other_actors[-1], self._pedestrian_velocity))
 
+        # The pedestrian needs to face us to make detection easier.
+        pedestrian_rotation = ActorRotationSetter(self.other_actors[-1], 90)
+
         # Define the endcondition.
         endcondition = py_trees.composites.Parallel(
             "Waiting for end position",
@@ -269,6 +273,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                                        self.ego_vehicles[0],
                                        self._pedestrian_trigger_distance))
         sequence.add_child(pedestrian_crossing)
+        sequence.add_child(pedestrian_rotation)
         sequence.add_child(endcondition)
         sequence.add_child(ActorDestroy(self.other_actors[0]))
         sequence.add_child(ActorDestroy(self.other_actors[-1]))
