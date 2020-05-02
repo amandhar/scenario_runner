@@ -119,7 +119,6 @@ class ERDOSPedestrianBehindCar(BasicScenario):
 
     This is a single ego vehicle scenario
     """
-
     def __init__(self,
                  world,
                  ego_vehicles,
@@ -287,7 +286,8 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         """
         criteria = []
         collision_criterion = CollisionTest(self.ego_vehicles[0],
-                                            terminate_on_failure=True)
+                                            terminate_on_failure=True,
+                                            num_updates_after_failure=10)
         criteria.append(collision_criterion)
         # Do no add the simulation time constraint when running in debug mode.
         if not self.debug_mode:
@@ -484,7 +484,8 @@ class ERDOSManyPedestrians(BasicScenario):
         """
         criteria = []
         collision_criterion = CollisionTest(self.ego_vehicles[0],
-                                            terminate_on_failure=True)
+                                            terminate_on_failure=True,
+                                            num_updates_after_failure=10)
         criteria.append(collision_criterion)
         # Do no add the simulation time constraint when running in debug mode.
         if not self.debug_mode:
@@ -630,7 +631,8 @@ class ERDOSCarRunningLight(BasicScenario):
         """
         criteria = []
         collision_criterion = CollisionTest(self.ego_vehicles[0],
-                                            terminate_on_failure=True)
+                                            terminate_on_failure=True,
+                                            num_updates_after_failure=10)
         criteria.append(collision_criterion)
         # Do no add the simulation time constraint when running in debug mode.
         if not self.debug_mode:
@@ -733,7 +735,8 @@ class ERDOSCarFromAlley(BasicScenario):
         """
         criteria = []
         collision_criterion = CollisionTest(self.ego_vehicles[0],
-                                            terminate_on_failure=True)
+                                            terminate_on_failure=True,
+                                            num_updates_after_failure=10)
         criteria.append(collision_criterion)
 
         # Do not add the simulation time criteria when running in debug mode.
@@ -969,7 +972,8 @@ class ERDOSPedestrianCrossing(BasicScenario):
         """
         criteria = []
         collision_criterion = CollisionTest(self.ego_vehicles[0],
-                                            terminate_on_failure=True)
+                                            terminate_on_failure=True,
+                                            num_updates_after_failure=10)
         criteria.append(collision_criterion)
 
         # Do not add the simulation time criteria when running in debug mode.

@@ -342,7 +342,7 @@ class CollisionTest(Criterion):
         'vehicle.bh.crossbike'
     ]
 
-    def __init__(self, actor, optional=False, name="CheckCollisions", terminate_on_failure=False):
+    def __init__(self, actor, optional=False, name="CheckCollisions", terminate_on_failure=False, num_updates_after_failure=0):
         """
         Construction with sensor setup
         """
@@ -358,6 +358,8 @@ class CollisionTest(Criterion):
         self.registered_collisions = []
         self.last_walker_id = None
         self.actual_value = 0
+        self._max_num_updates_after_failure = num_updates_after_failure
+        self._num_updates_after_failure = 0
 
     def update(self):
         """
@@ -366,7 +368,9 @@ class CollisionTest(Criterion):
         new_status = py_trees.common.Status.RUNNING
 
         if self._terminate_on_failure and (self.test_status == "FAILURE"):
-            new_status = py_trees.common.Status.FAILURE
+            if self._num_updates_after_failure >= self._max_num_updates_after_failure:
+                new_status = py_trees.common.Status.FAILURE
+            self._num_updates_after_failure += 1
 
         actor_location = CarlaDataProvider.get_location(self._actor)
         new_registered_collisions = []
