@@ -316,8 +316,8 @@ class ERDOSPedestrianBehindParkedCar(ERDOSPedestrianBehindCar):
                  timeout=600000000000):
         super(ERDOSPedestrianBehindParkedCar,
               self).__init__(world, ego_vehicles, config, randomize,
-                             debug_mode, criteria_enable, timeout, 212, -3.25,
-                             215, -3.0, 2.5, 25, -90, 3.0)
+                             debug_mode, criteria_enable, timeout, 212, -3.5,
+                             215, -3.25, 2.5, 25, -90, 3.0)
 
 
 class ERDOSManyPedestrians(BasicScenario):
