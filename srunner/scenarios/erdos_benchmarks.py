@@ -202,7 +202,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                            coca_cola_van_wp.transform.rotation.yaw + 180,
                            coca_cola_van_wp.transform.rotation.roll))
         coca_cola_van = CarlaActorPool.request_new_actor(
-            'vehicle.carlamotors.carlacola', self._coca_cola_van_transform)
+            'vehicle.volkswagen.t2', self._coca_cola_van_transform)
         self.other_actors.append(coca_cola_van)
 
         # Initialize the pedestrian.
@@ -316,8 +316,8 @@ class ERDOSPedestrianBehindParkedCar(ERDOSPedestrianBehindCar):
                  timeout=600000000000):
         super(ERDOSPedestrianBehindParkedCar,
               self).__init__(world, ego_vehicles, config, randomize,
-                             debug_mode, criteria_enable, timeout, 208, -3,
-                             215, -2.5, 2.5, 25, -90, 3.0)
+                             debug_mode, criteria_enable, timeout, 212, -3.25,
+                             215, -3.0, 2.5, 25, -90, 3.0)
 
 
 class ERDOSManyPedestrians(BasicScenario):
@@ -777,7 +777,7 @@ class ERDOSTrackPedestrians(BasicScenario):
         self._map = CarlaDataProvider.get_map()
         self._world = CarlaDataProvider.get_world()
         self._reference_waypoint = self._map.get_waypoint(
-        config.trigger_points[0].location)
+            config.trigger_points[0].location)
         self.timeout = timeout
 
         # Number of pedestrians in the scene
@@ -790,7 +790,7 @@ class ERDOSTrackPedestrians(BasicScenario):
         self._pedestrian_velocity = 6
 
         self._driving_distance = 370
-         # Call the base class to set up the scenario.
+        # Call the base class to set up the scenario.
         super(ERDOSTrackPedestrians,
               self).__init__("ERDOSTrackPedestrians",
                              ego_vehicles,
