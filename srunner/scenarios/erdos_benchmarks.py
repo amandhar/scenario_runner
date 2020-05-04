@@ -667,11 +667,11 @@ class ERDOSCarFromAlley(BasicScenario):
         self.timeout = timeout
 
         # Other vehicle config.
-        self._crossing_distance = 7
-        self._vehicle_velocity = 13
-        self._vehicle_trigger_distance = 60
+        self._crossing_distance = 1.75
+        self._vehicle_velocity = 2.5
+        self._vehicle_trigger_distance = 50
 
-        self._driving_distance = 260
+        self._driving_distance = 250
 
         # Call the base class to set up the scenario.
         super(ERDOSCarFromAlley,
@@ -703,9 +703,9 @@ class ERDOSCarFromAlley(BasicScenario):
             "Obstacle clearing road",
             policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE)
         vehicle_crossing.add_child(
-            DriveDistance(self.other_actors[0], self._crossing_distance))
-        vehicle_crossing.add_child(
-            KeepVelocity(self.other_actors[0], self._vehicle_velocity))
+            KeepVelocity(self.other_actors[0],
+                         self._vehicle_velocity,
+                         distance=self._crossing_distance))
 
         # Define the end condition.
         endcondition = py_trees.composites.Parallel(
