@@ -669,7 +669,7 @@ class ERDOSCarFromAlley(BasicScenario):
         # Other vehicle config.
         self._crossing_distance = 1.75
         self._vehicle_velocity = 2.5
-        self._vehicle_trigger_distance = 50
+        self._vehicle_trigger_distance = 60
 
         self._driving_distance = 250
 
