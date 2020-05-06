@@ -134,7 +134,8 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                  pedestrian_velocity=3.5,
                  pedestrian_trigger_distance=50,
                  pedestrian_yaw_offset=90,
-                 crossing_distance=6.5):
+                 crossing_distance=6.5,
+                 truck_bp_name='vehicle.carlamotors.carlacola'):
         """
         Sets up the required class variables and calls BasicScenario to
         finish setting up the scenario.
@@ -149,6 +150,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         # Coca Cola Van Config
         self._coca_cola_van_distance = coca_cola_van_distance
         self._coca_cola_van_translation = coca_cola_van_translation
+        self._truck_bp_name = truck_bp_name
 
         # Pedestrian Config
         self._pedestrian_distance = pedestrian_distance
@@ -202,7 +204,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                            coca_cola_van_wp.transform.rotation.yaw + 180,
                            coca_cola_van_wp.transform.rotation.roll))
         coca_cola_van = CarlaActorPool.request_new_actor(
-            'vehicle.volkswagen.t2', self._coca_cola_van_transform)
+            self._truck_bp_name, self._coca_cola_van_transform)
         self.other_actors.append(coca_cola_van)
 
         # Initialize the pedestrian.
@@ -220,7 +222,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                 self._pedestrian_yaw_offset,
                 pedestrian_wp.transform.rotation.roll))
         pedestrian = CarlaActorPool.request_new_actor(
-            'walker.pedestrian.0007',
+            'walker.pedestrian.0005',
             self._pedestrian_transform,
             rolename='pedestrian')
         self.other_actors.append(pedestrian)
@@ -249,7 +251,9 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         pedestrian_crossing.add_child(
             DriveDistance(self.other_actors[-1], self._crossing_distance))
         pedestrian_crossing.add_child(
-            KeepVelocity(self.other_actors[-1], self._pedestrian_velocity))
+            KeepVelocity(self.other_actors[-1],
+                         self._pedestrian_velocity,
+                         distance=self._crossing_distance))
 
         # The pedestrian needs to face us to make detection easier.
         pedestrian_rotation = ActorRotationSetter(self.other_actors[-1], 90)
@@ -317,7 +321,8 @@ class ERDOSPedestrianBehindParkedCar(ERDOSPedestrianBehindCar):
         super(ERDOSPedestrianBehindParkedCar,
               self).__init__(world, ego_vehicles, config, randomize,
                              debug_mode, criteria_enable, timeout, 212, -3.5,
-                             215, -3.25, 2.5, 25, -90, 3.0)
+                             215, -3.25, 2.5, 25, -90, 3.0,
+                             'vehicle.volkswagen.t2')
 
 
 class ERDOSManyPedestrians(BasicScenario):
