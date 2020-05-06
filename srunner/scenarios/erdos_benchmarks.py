@@ -222,7 +222,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                 self._pedestrian_yaw_offset,
                 pedestrian_wp.transform.rotation.roll))
         pedestrian = CarlaActorPool.request_new_actor(
-            'walker.pedestrian.0005',
+            'walker.pedestrian.0008',
             self._pedestrian_transform,
             rolename='pedestrian')
         self.other_actors.append(pedestrian)
