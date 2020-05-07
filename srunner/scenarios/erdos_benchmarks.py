@@ -127,15 +127,17 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                  debug_mode=False,
                  criteria_enable=True,
                  timeout=600000000000,
-                 coca_cola_van_distance=215,
+                 coca_cola_van_distance=210,
                  coca_cola_van_translation=4,
-                 pedestrian_distance=222,
-                 pedestrian_translation=6,
-                 pedestrian_velocity=3.5,
-                 pedestrian_trigger_distance=50,
+                 pedestrian_distance=220,
+                 pedestrian_translation=4.5,
+                 pedestrian_velocity=2.75,
+                 pedestrian_trigger_distance=47,
                  pedestrian_yaw_offset=90,
-                 crossing_distance=6.5,
-                 truck_bp_name='vehicle.carlamotors.carlacola'):
+                 crossing_distance=4.5,
+                 pedestrian_bp_name='walker.pedestrian.0008',
+                 truck_bp_name='vehicle.carlamotors.carlacola',
+                 rotate_pedestrian=True):
         """
         Sets up the required class variables and calls BasicScenario to
         finish setting up the scenario.
@@ -158,6 +160,8 @@ class ERDOSPedestrianBehindCar(BasicScenario):
         self._pedestrian_velocity = pedestrian_velocity
         self._pedestrian_trigger_distance = pedestrian_trigger_distance
         self._pedestrian_yaw_offset = pedestrian_yaw_offset
+        self._pedestrian_bp_name = pedestrian_bp_name
+        self._rotate_pedestrian = rotate_pedestrian
 
         # Miscellaneous Config
         self._crossing_distance = crossing_distance
@@ -204,7 +208,7 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                            coca_cola_van_wp.transform.rotation.yaw + 180,
                            coca_cola_van_wp.transform.rotation.roll))
         coca_cola_van = CarlaActorPool.request_new_actor(
-            self._truck_bp_name, self._coca_cola_van_transform)
+            self._truck_bp_name, self._coca_cola_van_transform, color='red')
         self.other_actors.append(coca_cola_van)
 
         # Initialize the pedestrian.
@@ -222,8 +226,9 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                 self._pedestrian_yaw_offset,
                 pedestrian_wp.transform.rotation.roll))
         pedestrian = CarlaActorPool.request_new_actor(
-            'walker.pedestrian.0008',
+            self._pedestrian_bp_name,
             self._pedestrian_transform,
+            color='red',
             rolename='pedestrian')
         self.other_actors.append(pedestrian)
 
@@ -276,7 +281,8 @@ class ERDOSPedestrianBehindCar(BasicScenario):
                                        self.ego_vehicles[0],
                                        self._pedestrian_trigger_distance))
         sequence.add_child(pedestrian_crossing)
-        sequence.add_child(pedestrian_rotation)
+        if self._rotate_pedestrian:
+            sequence.add_child(pedestrian_rotation)
         sequence.add_child(endcondition)
         sequence.add_child(ActorDestroy(self.other_actors[0]))
         sequence.add_child(ActorDestroy(self.other_actors[-1]))
@@ -323,6 +329,35 @@ class ERDOSPedestrianBehindParkedCar(ERDOSPedestrianBehindCar):
                              debug_mode, criteria_enable, timeout, 212, -3.5,
                              215, -3.25, 2.5, 25, -90, 3.0,
                              'vehicle.volkswagen.t2')
+
+
+class ERDOSCarBehindTruck(ERDOSPedestrianBehindCar):
+    def __init__(self,
+                 world,
+                 ego_vehicles,
+                 config,
+                 randomize=False,
+                 debug_mode=False,
+                 criteria_enable=True,
+                 timeout=600000000000):
+        super(ERDOSCarBehindTruck,
+              self).__init__(world,
+                             ego_vehicles,
+                             config,
+                             randomize,
+                             debug_mode,
+                             criteria_enable,
+                             timeout,
+                             208,
+                             4,
+                             220,
+                             4.5,
+                             4.5,
+                             50,
+                             90,
+                             3.5,
+                             pedestrian_bp_name='vehicle.nissan.micra',
+                             rotate_pedestrian=False)
 
 
 class ERDOSManyPedestrians(BasicScenario):

@@ -41,7 +41,7 @@ from srunner.scenarios.control_loss import ControlLoss
 from srunner.scenarios.erdos_benchmarks import ERDOSPedestrianBehindCar, \
     ERDOSPedestrianBehindParkedCar, ERDOSManyPedestrians, ERDOSCarRunningLight, \
     ERDOSCarFromAlley, ERDOSTrackPedestrians, ERDOSPedestrianCrossing, \
-    ERDOSPedestrianCrossingPaths
+    ERDOSPedestrianCrossingPaths, ERDOSCarBehindTruck
 from srunner.scenarios.follow_leading_vehicle import FollowLeadingVehicle, FollowLeadingVehicleWithObstacle
 from srunner.scenarios.maneuver_opposite_direction import ManeuverOppositeDirection
 from srunner.scenarios.no_signal_junction_crossing import NoSignalJunctionCrossing
