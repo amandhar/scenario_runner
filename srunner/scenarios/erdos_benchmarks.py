@@ -1180,3 +1180,192 @@ class ERDOSPedestrianCrossingPaths(ERDOSPedestrianCrossing):
         sequence.add_child(ActorDestroy(self.other_actors[1]))
 
         return sequence
+
+class ERDOSTrafficJam(BasicScenario):
+    """
+    This class sets up the scenario where the ego vehicle needs to drive
+    on a road, and there is a jam on both sides of the road.
+
+    This is a single ego vehicle scenario
+    """
+    def __init__(self,
+                 world,
+                 ego_vehicles,
+                 config,
+                 randomize=False,
+                 debug_mode=False,
+                 criteria_enable=True,
+                 timeout=600000000000,
+                 coca_cola_van_distance=215,
+                 coca_cola_van_translation=4,
+                 pedestrian_distance=222,
+                 pedestrian_translation=6,
+                 pedestrian_velocity=3.5,
+                 pedestrian_trigger_distance=50,
+                 pedestrian_yaw_offset=90,
+                 crossing_distance=6.5,
+                 truck_bp_name='vehicle.carlamotors.carlacola'):
+        """
+        Sets up the required class variables and calls BasicScenario to
+        finish setting up the scenario.
+        """
+        self.debug_mode = debug_mode
+        self._map = CarlaDataProvider.get_map()
+        self._world = CarlaDataProvider.get_world()
+        self._reference_waypoint = self._map.get_waypoint(
+            config.trigger_points[0].location)
+        self.timeout = timeout
+
+        ## Vehicles on the left side of the street.
+        # Coca Cola Van Config
+        self._coca_cola_van_distance = coca_cola_van_distance
+        self._coca_cola_van_translation = coca_cola_van_translation
+        self._truck_bp_name = truck_bp_name
+
+        # Other vehicles in the front of coca cola van.
+        self._left_blueprints = [
+            "vehicle.audi.a2", 
+            "vehicle.chevrolet.impala",
+            "vehicle.mustang.mustang", "vehicle.nissan.micra",
+            "vehicle.tesla.model3", "vehicle.toyota.prius"
+        ]
+        self._right_blueprints = [
+            "vehicle.volkswagen.t2",
+            "vehicle.mini.cooperst",
+            "vehicle.kawasaki.ninja",
+        ]
+        self._transforms = []
+
+        # Miscellaneous Config
+        self._crossing_distance = crossing_distance
+        self._driving_distance = 290
+
+        # Call the base class to set up the scenario.
+        super(ERDOSTrafficJam,
+              self).__init__("ERDOSPedestrianBehindCar",
+                             ego_vehicles,
+                             config,
+                             world,
+                             debug_mode,
+                             criteria_enable=criteria_enable)
+
+    def _initialize_actors(self, config):
+        """
+        Initializes the other vehicles in the scenario.
+        """
+        # Initialize the coca cola truck.
+        coca_cola_van_wp, _ = ERDOSPedestrianBehindCar.get_waypoint_in_distance(
+            self._reference_waypoint, self._coca_cola_van_distance)
+        self._coca_cola_van_transform = carla.Transform(
+            carla.Location(
+                coca_cola_van_wp.transform.location.x,
+                coca_cola_van_wp.transform.location.y +
+                self._coca_cola_van_translation,
+                coca_cola_van_wp.transform.location.z + 1),
+            carla.Rotation(coca_cola_van_wp.transform.rotation.pitch,
+                           coca_cola_van_wp.transform.rotation.yaw + 180,
+                           coca_cola_van_wp.transform.rotation.roll))
+        coca_cola_van = CarlaActorPool.request_new_actor(
+            self._truck_bp_name, self._coca_cola_van_transform)
+        self.other_actors.append(coca_cola_van)
+
+        # Initialize all the other actors.
+        for i, blueprint in enumerate(self._left_blueprints, 1):
+            bp_wp, _ = ERDOSPedestrianBehindCar.get_waypoint_in_distance(
+                self._reference_waypoint,
+                self._coca_cola_van_distance - (i * 10))
+            bp_transform = carla.Transform(
+                carla.Location(
+                    bp_wp.transform.location.x, bp_wp.transform.location.y +
+                    self._coca_cola_van_translation,
+                    bp_wp.transform.location.z + 1),
+                carla.Rotation(bp_wp.transform.rotation.pitch,
+                               bp_wp.transform.rotation.yaw + 180,
+                               bp_wp.transform.rotation.roll))
+            bp = CarlaActorPool.request_new_actor(blueprint, bp_transform)
+            self.other_actors.append(bp)
+            self._transforms.append(bp_transform)
+
+        for i, blueprint in enumerate(self._right_blueprints):
+            bp_wp, _ = ERDOSPedestrianBehindCar.get_waypoint_in_distance(
+                self._reference_waypoint,
+                self._coca_cola_van_distance - (i * 10))
+            bp_transform = carla.Transform(
+                carla.Location(
+                    bp_wp.transform.location.x, bp_wp.transform.location.y,
+                    bp_wp.transform.location.z + 1),
+                carla.Rotation(bp_wp.transform.rotation.pitch,
+                               bp_wp.transform.rotation.yaw,
+                               bp_wp.transform.rotation.roll))
+            bp = CarlaActorPool.request_new_actor(blueprint, bp_transform)
+            self.other_actors.append(bp)
+            self._transforms.append(bp_transform)
+
+
+        # Set all the traffic lights in the world to green.
+        for actor in self._world.get_actors():
+            if actor.type_id == "traffic.traffic_light":
+                actor.set_state(carla.TrafficLightState.Green)
+                actor.freeze(True)
+
+    def _create_behavior(self):
+        """
+        The scenario involves setting up a set of vehicles, and having a
+        pedestrian run from in between the vehicles in front of the ego
+        vehicle.
+        """
+
+        # First, fix the transform of the other actors in the scene.
+        coca_cola_transform = ActorTransformSetter(
+            self.other_actors[0], self._coca_cola_van_transform)
+
+        transform_setters = []
+        for actor, transform in zip(self.other_actors[1:], self._transforms):
+            transform_setters.append(ActorTransformSetter(actor, transform))
+
+
+        # Define the endcondition.
+        endcondition = py_trees.composites.Parallel(
+            "Waiting for end position",
+            policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL)
+        reached_goal = InTriggerDistanceToLocation(
+            self.ego_vehicles[0], self._transforms[-1].location, 25)
+        endcondition.add_child(reached_goal)
+        endcondition.add_child(
+            StandStill(self.ego_vehicles[0], name="StandStill", duration=2))
+
+        # Define the behavior tree.
+        sequence = py_trees.composites.Sequence(
+            "PedestrianBehindCar Behavior Tree")
+        sequence.add_child(coca_cola_transform)
+        for transform_setter in transform_setters:
+            sequence.add_child(transform_setter)
+        sequence.add_child(endcondition)
+        sequence.add_child(ActorDestroy(self.other_actors[0]))
+
+        return sequence
+
+    def _create_test_criteria(self):
+        """
+        A list of all test criteria will be created that is later used
+        in parallel behavior tree.
+        """
+        criteria = []
+        collision_criterion = CollisionTest(self.ego_vehicles[0],
+                                            terminate_on_failure=True,
+                                            num_updates_after_failure=10)
+        criteria.append(collision_criterion)
+        # Do no add the simulation time constraint when running in debug mode.
+        if not self.debug_mode:
+            # The scenario should run for 50 simulation time seconds.
+            timely_arrival = MaxSimTimeTest(self.ego_vehicles[0],
+                                            50,
+                                            terminate_on_failure=True)
+            criteria.append(timely_arrival)
+        return criteria
+
+    def __del__(self):
+        """
+        Remove all actors upon deletion
+        """
+        self.remove_all_actors()
