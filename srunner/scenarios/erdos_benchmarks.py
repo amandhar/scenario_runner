@@ -1181,6 +1181,7 @@ class ERDOSPedestrianCrossingPaths(ERDOSPedestrianCrossing):
 
         return sequence
 
+
 class ERDOSTrafficJam(BasicScenario):
     """
     This class sets up the scenario where the ego vehicle needs to drive
@@ -1224,10 +1225,11 @@ class ERDOSTrafficJam(BasicScenario):
 
         # Other vehicles in the front of coca cola van.
         self._left_blueprints = [
-            "vehicle.audi.a2", 
+            "vehicle.audi.a2",
             "vehicle.chevrolet.impala",
-            "vehicle.mustang.mustang", "vehicle.nissan.micra",
-            "vehicle.tesla.model3", "vehicle.toyota.prius"
+            "vehicle.mustang.mustang",
+            "vehicle.nissan.micra",
+            #            "vehicle.tesla.model3", "vehicle.toyota.prius"
         ]
         self._right_blueprints = [
             "vehicle.volkswagen.t2",
@@ -1241,13 +1243,12 @@ class ERDOSTrafficJam(BasicScenario):
         self._driving_distance = 290
 
         # Call the base class to set up the scenario.
-        super(ERDOSTrafficJam,
-              self).__init__("ERDOSPedestrianBehindCar",
-                             ego_vehicles,
-                             config,
-                             world,
-                             debug_mode,
-                             criteria_enable=criteria_enable)
+        super(ERDOSTrafficJam, self).__init__("ERDOSPedestrianBehindCar",
+                                              ego_vehicles,
+                                              config,
+                                              world,
+                                              debug_mode,
+                                              criteria_enable=criteria_enable)
 
     def _initialize_actors(self, config):
         """
@@ -1273,7 +1274,7 @@ class ERDOSTrafficJam(BasicScenario):
         for i, blueprint in enumerate(self._left_blueprints, 1):
             bp_wp, _ = ERDOSPedestrianBehindCar.get_waypoint_in_distance(
                 self._reference_waypoint,
-                self._coca_cola_van_distance - (i * 10))
+                self._coca_cola_van_distance - (i * 5))
             bp_transform = carla.Transform(
                 carla.Location(
                     bp_wp.transform.location.x, bp_wp.transform.location.y +
@@ -1287,20 +1288,22 @@ class ERDOSTrafficJam(BasicScenario):
             self._transforms.append(bp_transform)
 
         for i, blueprint in enumerate(self._right_blueprints):
+            offset = 0
+            if i == len(self._right_blueprints) - 1:
+                offset = 3
             bp_wp, _ = ERDOSPedestrianBehindCar.get_waypoint_in_distance(
                 self._reference_waypoint,
-                self._coca_cola_van_distance - (i * 10))
+                self._coca_cola_van_distance - (i * 5) - offset)
             bp_transform = carla.Transform(
-                carla.Location(
-                    bp_wp.transform.location.x, bp_wp.transform.location.y,
-                    bp_wp.transform.location.z + 1),
+                carla.Location(bp_wp.transform.location.x,
+                               bp_wp.transform.location.y,
+                               bp_wp.transform.location.z + 1),
                 carla.Rotation(bp_wp.transform.rotation.pitch,
                                bp_wp.transform.rotation.yaw,
                                bp_wp.transform.rotation.roll))
             bp = CarlaActorPool.request_new_actor(blueprint, bp_transform)
             self.other_actors.append(bp)
             self._transforms.append(bp_transform)
-
 
         # Set all the traffic lights in the world to green.
         for actor in self._world.get_actors():
@@ -1323,7 +1326,6 @@ class ERDOSTrafficJam(BasicScenario):
         for actor, transform in zip(self.other_actors[1:], self._transforms):
             transform_setters.append(ActorTransformSetter(actor, transform))
 
-
         # Define the endcondition.
         endcondition = py_trees.composites.Parallel(
             "Waiting for end position",
@@ -1332,7 +1334,10 @@ class ERDOSTrafficJam(BasicScenario):
             self.ego_vehicles[0], self._transforms[-1].location, 25)
         endcondition.add_child(reached_goal)
         endcondition.add_child(
-            StandStill(self.ego_vehicles[0], name="StandStill", duration=2))
+            StandStill(self.ego_vehicles[0],
+                       name="StandStill",
+                       duration=2,
+                       epsilon=0.2))
 
         # Define the behavior tree.
         sequence = py_trees.composites.Sequence(

@@ -46,7 +46,7 @@
     </scenario>
 
     <scenario name="ERDOSTrafficJam" type="ERDOSTrafficJam" town="Town01">
-        <ego_vehicle x="387.73" y="326.37" z="0.5" yaw="180" model="vehicle.lincoln.mkz2017" />
+        <ego_vehicle x="317.73" y="326.37" z="0.5" yaw="180" model="vehicle.lincoln.mkz2017" />
         <weather cloudyness="0" precipitation="0" precipitation_deposits="0" wind_intensity="0" sun_azimuth="0" sun_altitude="75" />
     </scenario>
 </scenarios>

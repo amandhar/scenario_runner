@@ -203,7 +203,7 @@ class StandStill(AtomicCondition):
     The condition terminates with SUCCESS, when the actor does not move
     """
 
-    def __init__(self, actor, name, duration=float("inf")):
+    def __init__(self, actor, name, duration=float("inf"), epsilon=EPSILON):
         """
         Setup actor
         """
@@ -213,6 +213,7 @@ class StandStill(AtomicCondition):
 
         self._duration = duration
         self._start_time = 0
+        self._epsilon = epsilon
 
     def initialise(self):
         """
@@ -229,7 +230,7 @@ class StandStill(AtomicCondition):
 
         velocity = CarlaDataProvider.get_velocity(self._actor)
 
-        if velocity > EPSILON:
+        if velocity > self._epsilon:
             self._start_time = GameTime.get_time()
 
         if GameTime.get_time() - self._start_time > self._duration:
