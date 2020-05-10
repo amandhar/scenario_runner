@@ -15,4 +15,4 @@ fi
 export ROOT_SCENARIO_RUNNER=`pwd`
 export CARLA_SERVER=${CARLA_HOME}/CarlaUE4.sh
 
-export PYTHONPATH=${CARLA_HOME}/PythonAPI/carla/dist/carla-$CARLA_VERSION-py3.5-linux-x86_64.egg:${CARLA_HOME}/PythonAPI:${CARLA_HOME}/PythonAPI/carla/:${CARLA_HOME}/PythonAPI/carla/agents/:${ROOT_SCENARIO_RUNNER}/
+export PYTHONPATH=${PYTHONPATH}:${CARLA_HOME}/PythonAPI/carla/dist/carla-$CARLA_VERSION-py3.5-linux-x86_64.egg:${CARLA_HOME}/PythonAPI:${CARLA_HOME}/PythonAPI/carla/:${CARLA_HOME}/PythonAPI/carla/agents/:${ROOT_SCENARIO_RUNNER}/

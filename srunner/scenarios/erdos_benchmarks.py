@@ -335,7 +335,7 @@ class ERDOSManyPedestrians(BasicScenario):
                  randomize=False,
                  debug_mode=False,
                  criteria_enable=True,
-                 timeout=600000000000):
+                 timeout=60):
         """
         Sets up the required class variables and calls BasicScenario to
         finish setting up the scenario.
@@ -768,7 +768,7 @@ class ERDOSTrackPedestrians(BasicScenario):
                  randomize=False,
                  debug_mode=False,
                  criteria_enable=True,
-                 timeout=600000000000):
+                 timeout=60):
         """
         Sets up the required class variables and calls BasicScenario to
         set up most of the scenario.
